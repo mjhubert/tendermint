@@ -89,7 +89,20 @@ var (
 
 // EventData is satisfied by types that can be published as event data.
 type EventData interface {
+	// The value must support encoding as a type-tagged JSON object.
 	jsontypes.Tagged
+
+	// If the data value contains any ABCI events this method returns them.
+	// If the value contains no ABCI events it must return nil or empty.
+	//
+	// The reported slice must not contain an event type, since some events
+	// share the same datum among different types (e.g., EventDataRoundState).
+	//
+	// TODO(creachadair): Make this an optional extension interface instead?
+	// The argument for requiring it is that it's harder to forget and silently
+	// miss events in the subscriber. The argument against is that most of the
+	// data types don't have internal ABCI events.
+	ABCIEvents() []abci.Event
 }
 
 func init() {
@@ -121,6 +134,11 @@ type EventDataNewBlock struct {
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataNewBlock) TypeTag() string { return "tendermint/event/NewBlock" }
 
+// ABCIEvents implements a required method of the EventData interface.
+func (e EventDataNewBlock) ABCIEvents() []abci.Event {
+	return append(e.ResultBeginBlock.Events, e.ResultEndBlock.Events...)
+}
+
 type EventDataNewBlockHeader struct {
 	Header Header `json:"header"`
 
@@ -132,6 +150,11 @@ type EventDataNewBlockHeader struct {
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataNewBlockHeader) TypeTag() string { return "tendermint/event/NewBlockHeader" }
 
+// ABCIEvents implements a required method of the EventData interface.
+func (e EventDataNewBlockHeader) ABCIEvents() []abci.Event {
+	return append(e.ResultBeginBlock.Events, e.ResultEndBlock.Events...)
+}
+
 type EventDataNewEvidence struct {
 	Evidence Evidence `json:"evidence"`
 
@@ -141,6 +164,9 @@ type EventDataNewEvidence struct {
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataNewEvidence) TypeTag() string { return "tendermint/event/NewEvidence" }
 
+// ABCIEvents implements a required method of the EventData interface.
+func (EventDataNewEvidence) ABCIEvents() []abci.Event { return nil }
+
 // All txs fire EventDataTx
 type EventDataTx struct {
 	abci.TxResult
@@ -148,6 +174,15 @@ type EventDataTx struct {
 
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataTx) TypeTag() string { return "tendermint/event/Tx" }
+
+// ABCIEvents implements a required method of the EventData interface.
+func (e EventDataTx) ABCIEvents() []abci.Event {
+	base := []abci.Event{
+		eventWithAttr(TxHashKey, fmt.Sprintf("%X", Tx(e.Tx).Hash())),
+		eventWithAttr(TxHeightKey, fmt.Sprintf("%d", e.Height)),
+	}
+	return append(base, e.Result.Events...)
+}
 
 // NOTE: This goes into the replay WAL
 type EventDataRoundState struct {
@@ -158,6 +193,9 @@ type EventDataRoundState struct {
 
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataRoundState) TypeTag() string { return "tendermint/event/RoundState" }
+
+// ABCIEvents implements a required method of the EventData interface.
+func (EventDataRoundState) ABCIEvents() []abci.Event { return nil }
 
 type ValidatorInfo struct {
 	Address Address `json:"address"`
@@ -175,6 +213,9 @@ type EventDataNewRound struct {
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataNewRound) TypeTag() string { return "tendermint/event/NewRound" }
 
+// ABCIEvents implements a required method of the EventData interface.
+func (EventDataNewRound) ABCIEvents() []abci.Event { return nil }
+
 type EventDataCompleteProposal struct {
 	Height int64  `json:"height,string"`
 	Round  int32  `json:"round"`
@@ -186,6 +227,9 @@ type EventDataCompleteProposal struct {
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataCompleteProposal) TypeTag() string { return "tendermint/event/CompleteProposal" }
 
+// ABCIEvents implements a required method of the EventData interface.
+func (EventDataCompleteProposal) ABCIEvents() []abci.Event { return nil }
+
 type EventDataVote struct {
 	Vote *Vote
 }
@@ -193,10 +237,16 @@ type EventDataVote struct {
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataVote) TypeTag() string { return "tendermint/event/Vote" }
 
+// ABCIEvents implements a required method of the EventData interface.
+func (EventDataVote) ABCIEvents() []abci.Event { return nil }
+
 type EventDataString string
 
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataString) TypeTag() string { return "tendermint/event/ProposalString" }
+
+// ABCIEvents implements a required method of the EventData interface.
+func (EventDataString) ABCIEvents() []abci.Event { return nil }
 
 type EventDataValidatorSetUpdates struct {
 	ValidatorUpdates []*Validator `json:"validator_updates"`
@@ -204,6 +254,9 @@ type EventDataValidatorSetUpdates struct {
 
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataValidatorSetUpdates) TypeTag() string { return "tendermint/event/ValidatorSetUpdates" }
+
+// ABCIEvents implements a required method of the EventData interface.
+func (EventDataValidatorSetUpdates) ABCIEvents() []abci.Event { return nil }
 
 // EventDataBlockSyncStatus shows the fastsync status and the
 // height when the node state sync mechanism changes.
@@ -215,6 +268,9 @@ type EventDataBlockSyncStatus struct {
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataBlockSyncStatus) TypeTag() string { return "tendermint/event/FastSyncStatus" }
 
+// ABCIEvents implements a required method of the EventData interface.
+func (EventDataBlockSyncStatus) ABCIEvents() []abci.Event { return nil }
+
 // EventDataStateSyncStatus shows the statesync status and the
 // height when the node state sync mechanism changes.
 type EventDataStateSyncStatus struct {
@@ -224,6 +280,9 @@ type EventDataStateSyncStatus struct {
 
 // TypeTag implements the required method of jsontypes.Tagged.
 func (EventDataStateSyncStatus) TypeTag() string { return "tendermint/event/StateSyncStatus" }
+
+// ABCIEvents implements a required method of the EventData interface.
+func (EventDataStateSyncStatus) ABCIEvents() []abci.Event { return nil }
 
 // PUBSUB
 
@@ -284,4 +343,17 @@ type BlockEventPublisher interface {
 
 type TxEventPublisher interface {
 	PublishEventTx(context.Context, EventDataTx) error
+}
+
+// eventWithAttr constructs a single abci.Event with a single attribute.
+// The type of the event and the name of the attribute are obtained by
+// splitting the event type on period (e.g., "foo.bar").
+func eventWithAttr(etype, value string) abci.Event {
+	parts := strings.SplitN(etype, ".", 2)
+	return abci.Event{
+		Type: parts[0],
+		Attributes: []abci.EventAttribute{{
+			Key: parts[1], Value: value,
+		}},
+	}
 }

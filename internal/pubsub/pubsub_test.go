@@ -23,7 +23,8 @@ const (
 // string-valued test data.
 type pubstring string
 
-func (pubstring) TypeTag() string { return "pubstring" }
+func (pubstring) TypeTag() string          { return "pubstring" }
+func (pubstring) ABCIEvents() []abci.Event { return nil }
 
 func TestSubscribeWithArgs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
