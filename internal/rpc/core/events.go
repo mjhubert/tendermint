@@ -2,10 +2,13 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/tendermint/tendermint/internal/eventlog"
+	"github.com/tendermint/tendermint/internal/eventlog/cursor"
 	tmpubsub "github.com/tendermint/tendermint/internal/pubsub"
 	tmquery "github.com/tendermint/tendermint/internal/pubsub/query"
 	"github.com/tendermint/tendermint/rpc/coretypes"
@@ -125,4 +128,117 @@ func (env *Environment) UnsubscribeAll(ctx context.Context) (*coretypes.ResultUn
 		return nil, err
 	}
 	return &coretypes.ResultUnsubscribe{}, nil
+}
+
+func (env *Environment) Events(ctx context.Context,
+	filter *coretypes.EventFilter,
+	maxItems int,
+	before, after cursor.Cursor,
+	waitTime time.Duration,
+) (*coretypes.ResultEvents, error) {
+	if env.EventLog == nil {
+		return nil, errors.New("the event log is not enabled")
+	}
+
+	// Parse and validate parameters.
+	if maxItems <= 0 {
+		maxItems = 10
+	} else if maxItems > 100 {
+		maxItems = 100
+	}
+
+	const maxWaitTime = 30 * time.Second
+	if waitTime > maxWaitTime {
+		waitTime = maxWaitTime
+	}
+
+	query := tmquery.All
+	if filter != nil && filter.Query != "" {
+		q, err := tmquery.New(filter.Query)
+		if err != nil {
+			return nil, fmt.Errorf("invalid filter query: %w", err)
+		}
+		query = q
+	}
+
+	var info eventlog.Info
+	var items []*eventlog.Item
+	var err error
+	accept := func(itm *eventlog.Item) error {
+		// N.B. We accept up to one item more than requested, so we can tell how
+		// to set the "more" flag in the response.
+		if len(items) > maxItems {
+			return eventlog.ErrStopScan
+		}
+		if cursorInRange(itm.Cursor, before, after) && query.Matches(itm.Events) {
+			items = append(items, itm)
+		}
+		return nil
+	}
+
+	if waitTime > 0 && before.IsZero() {
+		ctx, cancel := context.WithTimeout(ctx, waitTime)
+		defer cancel()
+
+		// Long poll. The loop here is because new items may not match the query,
+		// and we want to keep waiting until we have relevant results (or time out).
+		cur := after
+		for len(items) == 0 {
+			info, err = env.EventLog.WaitScan(ctx, cur, accept)
+			if err != nil {
+				// Don't report a timeout as a request failure.
+				if errors.Is(err, context.DeadlineExceeded) {
+					err = nil
+				}
+				break
+			}
+			cur = info.Newest
+		}
+	} else {
+		// Quick poll, return only what is already available.
+		info, err = env.EventLog.Scan(accept)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	more := len(items) > maxItems
+	if more {
+		items = items[:len(items)-1]
+	}
+	enc, err := marshalItems(items)
+	if err != nil {
+		return nil, err
+	}
+	return &coretypes.ResultEvents{
+		Items:  enc,
+		More:   more,
+		Oldest: cursorString(info.Oldest),
+		Newest: cursorString(info.Newest),
+	}, nil
+}
+
+func cursorString(c cursor.Cursor) string {
+	if c.IsZero() {
+		return ""
+	}
+	return c.String()
+}
+
+func cursorInRange(c, before, after cursor.Cursor) bool {
+	return (before.IsZero() || c.Before(before)) && (after.IsZero() || after.Before(c))
+}
+
+func marshalItems(items []*eventlog.Item) ([]*coretypes.EventItem, error) {
+	out := make([]*coretypes.EventItem, len(items))
+	for i, itm := range items {
+		v, err := json.Marshal(itm.Data)
+		if err != nil {
+			return nil, fmt.Errorf("encoding event data: %w", err)
+		}
+		out[i] = &coretypes.EventItem{Cursor: itm.Cursor.String()}
+		out[i].Data.Type = itm.Data.TypeTag()
+		out[i].Data.Value = v
+	}
+	return out, nil
 }

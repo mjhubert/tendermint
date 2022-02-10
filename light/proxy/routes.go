@@ -3,7 +3,9 @@ package proxy
 import (
 	"context"
 	"errors"
+	"time"
 
+	"github.com/tendermint/tendermint/internal/eventlog/cursor"
 	tmbytes "github.com/tendermint/tendermint/libs/bytes"
 	lrpc "github.com/tendermint/tendermint/light/rpc"
 	rpcclient "github.com/tendermint/tendermint/rpc/client"
@@ -30,7 +32,12 @@ func (p proxyService) GetConsensusState(ctx context.Context) (*coretypes.ResultC
 
 // TODO(creachadair): Remove this once the RPC clients support the new method.
 // This is just a placeholder to let things build during development.
-func (proxyService) Events(context.Context, coretypes.RequestEvents) (*coretypes.ResultEvents, error) {
+func (proxyService) Events(ctx context.Context,
+	filter *coretypes.EventFilter,
+	maxItems int,
+	before, after cursor.Cursor,
+	waitTime time.Duration,
+) (*coretypes.ResultEvents, error) {
 	return nil, errors.New("the /events method is not implemented")
 }
 

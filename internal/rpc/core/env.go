@@ -15,10 +15,12 @@ import (
 	"github.com/tendermint/tendermint/internal/blocksync"
 	"github.com/tendermint/tendermint/internal/consensus"
 	"github.com/tendermint/tendermint/internal/eventbus"
+	"github.com/tendermint/tendermint/internal/eventlog"
 	"github.com/tendermint/tendermint/internal/mempool"
 	"github.com/tendermint/tendermint/internal/p2p"
 	"github.com/tendermint/tendermint/internal/proxy"
 	tmpubsub "github.com/tendermint/tendermint/internal/pubsub"
+	"github.com/tendermint/tendermint/internal/pubsub/query"
 	sm "github.com/tendermint/tendermint/internal/state"
 	"github.com/tendermint/tendermint/internal/state/indexer"
 	"github.com/tendermint/tendermint/internal/statesync"
@@ -92,6 +94,7 @@ type Environment struct {
 	GenDoc            *types.GenesisDoc // cache the genesis structure
 	EventSinks        []indexer.EventSink
 	EventBus          *eventbus.EventBus // thread safe
+	EventLog          *eventlog.Log
 	Mempool           mempool.Mempool
 	StateSyncMetricer statesync.Metricer
 
@@ -236,6 +239,52 @@ func (env *Environment) StartService(ctx context.Context, conf *config.Config) (
 	// See https://github.com/tendermint/tendermint/issues/3435
 	if cfg.WriteTimeout <= conf.RPC.TimeoutBroadcastTxCommit {
 		cfg.WriteTimeout = conf.RPC.TimeoutBroadcastTxCommit + 1*time.Second
+	}
+
+	// If a non-empty event log window is defined, set up the log.
+	if w := conf.RPC.EventLogWindowSize; w > 0 {
+		lg, err := eventlog.New(eventlog.LogSettings{
+			WindowSize: w,
+			MaxItems:   conf.RPC.EventLogMaxItems,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("initializing event log: %w", err)
+		}
+
+		// Subscribe to all events published to the event bus, and forward them
+		// to the event log.
+		//
+		// TODO(creachadair): This is kind of a hack, ideally we'd share the
+		// observer with the indexer, but it's tricky to plumb them together.
+		// For now, use a "normal" subscription with a big buffer allowance.
+		// The event log should always be able to keep up.
+		const subscriberID = "event-log-subscriber"
+		sub, err := env.EventBus.SubscribeWithArgs(ctx, tmpubsub.SubscribeArgs{
+			ClientID: subscriberID,
+			Query:    query.All,
+			Limit:    1 << 16, // essentially "no limit"
+		})
+		if err != nil {
+			return nil, fmt.Errorf("event log subscribe: %w", err)
+		}
+		go func() {
+			// N.B. Use background for unsubscribe, ctx is already terminated.
+			defer env.EventBus.UnsubscribeAll(context.Background(), subscriberID) // nolint:errcheck
+			for {
+				msg, err := sub.Next(ctx)
+				if err != nil {
+					env.Logger.Error("Subscription terminated", "err", err)
+					return
+				}
+				etype, ok := eventlog.FindType(msg.Events())
+				if ok {
+					_ = lg.Add(etype, msg.Data())
+				}
+			}
+		}()
+
+		env.Logger.Info("Event log enabled")
+		env.EventLog = lg
 	}
 
 	// We may expose the RPC over both TCP and a Unix-domain socket.
