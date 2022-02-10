@@ -151,10 +151,16 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 func (blockExec *BlockExecutor) ProcessProposal(
 	ctx context.Context,
 	block *types.Block,
+	initialHeight int64,
 ) (bool, error) {
+
+	// TODO: Refactor this silly function
+	// todo determine where to get the initial height from!
+	lastCommitInfo := getBeginBlockValidatorInfo(block, blockExec.Store(), initialHeight)
 	req := abci.RequestProcessProposal{
-		Txs:    block.Data.Txs.ToSliceOfBytes(),
-		Header: *block.Header.ToProto(),
+		Txs:            block.Data.Txs.ToSliceOfBytes(),
+		Header:         *block.Header.ToProto(),
+		LastCommitInfo: lastCommitInfo,
 	}
 
 	resp, err := blockExec.proxyApp.ProcessProposal(ctx, req)
@@ -162,6 +168,8 @@ func (blockExec *BlockExecutor) ProcessProposal(
 		return false, ErrInvalidBlock(err)
 	}
 
+	// TODO: Parse through the returned execution and stage everything in some fashion
+	//
 	return resp.IsOK(), nil
 }
 
