@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 
 	tmbytes "github.com/tendermint/tendermint/libs/bytes"
 	lrpc "github.com/tendermint/tendermint/light/rpc"
@@ -25,6 +26,12 @@ func (p proxyService) ABCIQuery(ctx context.Context, path string, data tmbytes.H
 
 func (p proxyService) GetConsensusState(ctx context.Context) (*coretypes.ResultConsensusState, error) {
 	return p.ConsensusState(ctx)
+}
+
+// TODO(creachadair): Remove this once the RPC clients support the new method.
+// This is just a placeholder to let things build during development.
+func (proxyService) Events(context.Context, coretypes.RequestEvents) (*coretypes.ResultEvents, error) {
+	return nil, errors.New("the /events method is not implemented")
 }
 
 func (p proxyService) Subscribe(ctx context.Context, query string) (*coretypes.ResultSubscribe, error) {
