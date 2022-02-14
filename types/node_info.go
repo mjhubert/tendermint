@@ -31,6 +31,23 @@ type ProtocolVersion struct {
 
 //-------------------------------------------------------------
 
+// ProtocolAddress represents a networked endpoint
+//
+// ProtocalAddresses are either an IP Address
+// or a Tor Onion Address. Either IP or Path must be set.
+type ProtocolAddress struct {
+	IP    net.IP
+	Onion string
+}
+
+func (p *ProtocolAddress) String() string {
+	if len(p.Onion) > 0 {
+		return p.Onion
+	}
+
+	return p.IP.String()
+}
+
 // NodeInfo is the basic node information exchanged
 // between two peers during the Tendermint P2P handshake.
 type NodeInfo struct {
@@ -235,20 +252,20 @@ func NodeInfoFromProto(pb *tmp2p.NodeInfo) (NodeInfo, error) {
 // ParseAddressString reads an address string, and returns the IP
 // address and port information, returning an error for any validation
 // errors.
-func ParseAddressString(addr string) (net.IP, uint16, error) {
+func ParseAddressString(addr string) (ProtocolAddress, uint16, error) {
 	addrWithoutProtocol := removeProtocolIfDefined(addr)
 	spl := strings.Split(addrWithoutProtocol, "@")
 	if len(spl) != 2 {
-		return nil, 0, errors.New("invalid address")
+		return ProtocolAddress{}, 0, errors.New("invalid address")
 	}
 
 	id, err := NewNodeID(spl[0])
 	if err != nil {
-		return nil, 0, err
+		return ProtocolAddress{}, 0, err
 	}
 
 	if err := id.Validate(); err != nil {
-		return nil, 0, err
+		return ProtocolAddress{}, 0, err
 	}
 
 	addrWithoutProtocol = spl[1]
@@ -256,27 +273,35 @@ func ParseAddressString(addr string) (net.IP, uint16, error) {
 	// get host and port
 	host, portStr, err := net.SplitHostPort(addrWithoutProtocol)
 	if err != nil {
-		return nil, 0, err
+		return ProtocolAddress{}, 0, err
 	}
 	if len(host) == 0 {
-		return nil, 0, err
+		return ProtocolAddress{}, 0, err
+	}
+
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return ProtocolAddress{}, 0, err
+	}
+
+	if strings.HasSuffix(strings.ToLower(host), ".onion") {
+		if len(host) == 62 {
+			return ProtocolAddress{Onion: host}, uint16(port), nil
+		} else {
+			return ProtocolAddress{}, 0, errors.New("invalid onion address")
+		}
 	}
 
 	ip := net.ParseIP(host)
 	if ip == nil {
 		ips, err := net.LookupIP(host)
-		if err != nil {
-			return nil, 0, err
+		if err != nil || len(ips) == 0 {
+			return ProtocolAddress{}, 0, err
 		}
 		ip = ips[0]
 	}
 
-	port, err := strconv.ParseUint(portStr, 10, 16)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	return ip, uint16(port), nil
+	return ProtocolAddress{IP: ip}, uint16(port), nil
 }
 
 func removeProtocolIfDefined(addr string) string {

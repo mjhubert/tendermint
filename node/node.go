@@ -767,9 +767,9 @@ func getRouterConfig(conf *config.Config, proxyApp proxy.AppConns) p2p.RouterOpt
 			return nil
 		}
 
-		opts.FilterPeerByIP = func(ctx context.Context, ip net.IP, port uint16) error {
+		opts.FilterPeerByIP = func(ctx context.Context, addr types.ProtocolAddress, port uint16) error {
 			res, err := proxyApp.Query().Query(ctx, abci.RequestQuery{
-				Path: fmt.Sprintf("/p2p/filter/addr/%s", net.JoinHostPort(ip.String(), strconv.Itoa(int(port)))),
+				Path: fmt.Sprintf("/p2p/filter/addr/%s", net.JoinHostPort(addr.String(), strconv.Itoa(int(port)))),
 			})
 			if err != nil {
 				return err

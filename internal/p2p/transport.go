@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"strings"
 
 	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/types"
@@ -118,7 +118,9 @@ type Endpoint struct {
 
 	// IP is an IP address (v4 or v6) to connect to. If set, this defines the
 	// endpoint as a networked endpoint.
-	IP net.IP
+	//IP net.IP
+
+	Address types.ProtocolAddress
 
 	// Port is a network port (either TCP or UDP). If 0, a default port may be
 	// used depending on the protocol.
@@ -130,14 +132,14 @@ type Endpoint struct {
 
 // NewEndpoint constructs an Endpoint from a types.NetAddress structure.
 func NewEndpoint(addr string) (Endpoint, error) {
-	ip, port, err := types.ParseAddressString(addr)
+	paddr, port, err := types.ParseAddressString(addr)
 	if err != nil {
 		return Endpoint{}, err
 	}
 
 	return Endpoint{
 		Protocol: MConnProtocol,
-		IP:       ip,
+		Address:  paddr,
 		Port:     port,
 	}, nil
 }
@@ -149,8 +151,8 @@ func (e Endpoint) NodeAddress(nodeID types.NodeID) NodeAddress {
 		Protocol: e.Protocol,
 		Path:     e.Path,
 	}
-	if len(e.IP) > 0 {
-		address.Hostname = e.IP.String()
+	if len(e.Address.IP)+len(e.Address.Onion) > 0 {
+		address.Hostname = e.Address.String()
 		address.Port = e.Port
 	}
 	return address
@@ -161,7 +163,7 @@ func (e Endpoint) String() string {
 	// If this is a non-networked endpoint with a valid node ID as a path,
 	// assume that path is a node ID (to handle opaque URLs of the form
 	// scheme:id).
-	if e.IP == nil {
+	if len(e.Address.String()) == 0 {
 		if nodeID, err := types.NewNodeID(e.Path); err == nil {
 			return e.NodeAddress(nodeID).String()
 		}
@@ -175,14 +177,17 @@ func (e Endpoint) Validate() error {
 	case e.Protocol == "":
 		return errors.New("endpoint has no protocol")
 
-	case len(e.IP) > 0 && e.IP.To16() == nil:
-		return fmt.Errorf("invalid IP address %v", e.IP)
+	case len(e.Address.IP) > 0 && e.Address.IP.To16() == nil:
+		return fmt.Errorf("invalid IP address %v", e.Address.IP)
 
-	case e.Port > 0 && len(e.IP) == 0:
-		return fmt.Errorf("endpoint has port %v but no IP", e.Port)
+	case len(e.Address.Onion) > 0 && !(strings.HasSuffix(strings.ToLower(e.Address.Onion), ".onion") && len(e.Address.Onion) == 62):
+		return fmt.Errorf("invalid Onion address %v", e.Address.Onion)
 
-	case len(e.IP) == 0 && e.Path == "":
-		return errors.New("endpoint has neither path nor IP")
+	case e.Port > 0 && len(e.Address.String()) == 0:
+		return fmt.Errorf("endpoint has port %v but no address", e.Port)
+
+	case len(e.Address.String()) == 0 && e.Path == "":
+		return errors.New("endpoint has neither path nor address")
 
 	default:
 		return nil

@@ -18,6 +18,7 @@ import (
 	"github.com/tendermint/tendermint/libs/log"
 	p2pproto "github.com/tendermint/tendermint/proto/tendermint/p2p"
 	"github.com/tendermint/tendermint/types"
+	"golang.org/x/net/proxy"
 )
 
 const (
@@ -93,7 +94,7 @@ func (m *MConnTransport) Endpoints() []Endpoint {
 		Protocol: MConnProtocol,
 	}
 	if addr, ok := m.listener.Addr().(*net.TCPAddr); ok {
-		endpoint.IP = addr.IP
+		endpoint.Address.IP = addr.IP
 		endpoint.Port = uint16(addr.Port)
 	}
 	return []Endpoint{endpoint}
@@ -114,8 +115,16 @@ func (m *MConnTransport) Listen(endpoint Endpoint) error {
 		return err
 	}
 
+	listenAddr := endpoint.Address.String()
+
+	// A listen endpoint with an Onion address is a
+	// hidden service redirected to 127.0.0.1
+	if len(endpoint.Address.Onion) > 0 {
+		listenAddr = "127.0.0.1"
+	}
+
 	listener, err := net.Listen("tcp", net.JoinHostPort(
-		endpoint.IP.String(), strconv.Itoa(int(endpoint.Port))))
+		listenAddr, strconv.Itoa(int(endpoint.Port))))
 	if err != nil {
 		return err
 	}
@@ -162,9 +171,27 @@ func (m *MConnTransport) Dial(ctx context.Context, endpoint Endpoint) (Connectio
 		endpoint.Port = 26657
 	}
 
+	// Use SOCK5 for Dialing Onion address
+	if len(endpoint.Address.Onion) > 0 {
+
+		dialer, err := proxy.SOCKS5("tcp", "127.0.0.1:9050", nil, proxy.Direct)
+		if err != nil {
+			return nil, err
+		}
+
+		tcpConn, err := dialer.Dial("tcp", endpoint.Address.Onion)
+
+		if err != nil {
+			return nil, err
+		}
+
+		return newMConnConnection(m.logger, tcpConn, m.mConnConfig, m.channelDescs), nil
+
+	}
+
 	dialer := net.Dialer{}
 	tcpConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(
-		endpoint.IP.String(), strconv.Itoa(int(endpoint.Port))))
+		endpoint.Address.IP.String(), strconv.Itoa(int(endpoint.Port))))
 	if err != nil {
 		select {
 		case <-ctx.Done():
@@ -208,8 +235,8 @@ func (m *MConnTransport) validateEndpoint(endpoint Endpoint) error {
 	if endpoint.Protocol != MConnProtocol && endpoint.Protocol != TCPProtocol {
 		return fmt.Errorf("unsupported protocol %q", endpoint.Protocol)
 	}
-	if len(endpoint.IP) == 0 {
-		return errors.New("endpoint has no IP address")
+	if len(endpoint.Address.String()) == 0 {
+		return errors.New("endpoint has no address")
 	}
 	if endpoint.Path != "" {
 		return fmt.Errorf("endpoints with path not supported (got %q)", endpoint.Path)
@@ -440,7 +467,7 @@ func (c *mConnConnection) LocalEndpoint() Endpoint {
 		Protocol: MConnProtocol,
 	}
 	if addr, ok := c.conn.LocalAddr().(*net.TCPAddr); ok {
-		endpoint.IP = addr.IP
+		endpoint.Address.IP = addr.IP
 		endpoint.Port = uint16(addr.Port)
 	}
 	return endpoint
@@ -452,7 +479,7 @@ func (c *mConnConnection) RemoteEndpoint() Endpoint {
 		Protocol: MConnProtocol,
 	}
 	if addr, ok := c.conn.RemoteAddr().(*net.TCPAddr); ok {
-		endpoint.IP = addr.IP
+		endpoint.Address.IP = addr.IP
 		endpoint.Port = uint16(addr.Port)
 	}
 	return endpoint

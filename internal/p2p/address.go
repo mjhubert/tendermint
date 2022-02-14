@@ -115,6 +115,17 @@ func (a NodeAddress) Resolve(ctx context.Context) ([]Endpoint, error) {
 		}}, nil
 	}
 
+	// If the hostname ends with .onion, this is an onion address
+	// of a hidden service on TOR
+	if strings.HasSuffix(strings.ToLower(a.Hostname), ".onion") {
+		return []Endpoint{{
+			Protocol: a.Protocol,
+			Address:  types.ProtocolAddress{Onion: a.Hostname},
+			Port:     a.Port,
+			Path:     a.Path,
+		}}, nil
+	}
+
 	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", a.Hostname)
 	if err != nil {
 		return nil, err
@@ -123,7 +134,7 @@ func (a NodeAddress) Resolve(ctx context.Context) ([]Endpoint, error) {
 	for i, ip := range ips {
 		endpoints[i] = Endpoint{
 			Protocol: a.Protocol,
-			IP:       ip,
+			Address:  types.ProtocolAddress{IP: ip},
 			Port:     a.Port,
 			Path:     a.Path,
 		}

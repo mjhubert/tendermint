@@ -2,14 +2,14 @@ package p2p
 
 import (
 	"fmt"
-	"net"
 	"sync"
 	"time"
+	"github.com/tendermint/tendermint/types"
 )
 
 type connectionTracker interface {
-	AddConn(net.IP) error
-	RemoveConn(net.IP)
+	AddConn(types.ProtocolAddress) error
+	RemoveConn(types.ProtocolAddress)
 	Len() int
 }
 
@@ -35,7 +35,7 @@ func (rat *connTrackerImpl) Len() int {
 	return len(rat.cache)
 }
 
-func (rat *connTrackerImpl) AddConn(addr net.IP) error {
+func (rat *connTrackerImpl) AddConn(addr types.ProtocolAddress) error {
 	address := addr.String()
 	rat.mutex.Lock()
 	defer rat.mutex.Unlock()
@@ -57,7 +57,7 @@ func (rat *connTrackerImpl) AddConn(addr net.IP) error {
 	return nil
 }
 
-func (rat *connTrackerImpl) RemoveConn(addr net.IP) {
+func (rat *connTrackerImpl) RemoveConn(addr types.ProtocolAddress) {
 	address := addr.String()
 	rat.mutex.Lock()
 	defer rat.mutex.Unlock()

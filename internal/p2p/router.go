@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"runtime"
 	"sync"
 	"time"
@@ -52,7 +51,7 @@ type RouterOptions struct {
 	// the remote IP of the incoming connection the port number as
 	// arguments. Functions should return an error to reject the
 	// peer.
-	FilterPeerByIP func(context.Context, net.IP, uint16) error
+	FilterPeerByIP func(context.Context, types.ProtocolAddress, uint16) error
 
 	// FilterPeerByID is used by the router to inject filtering
 	// behavior for new incoming connections. The router passes
@@ -429,12 +428,12 @@ func (r *Router) numConccurentDials() int {
 	return r.options.NumConcurrentDials()
 }
 
-func (r *Router) filterPeersIP(ctx context.Context, ip net.IP, port uint16) error {
+func (r *Router) filterPeersIP(ctx context.Context, padr types.ProtocolAddress, port uint16) error {
 	if r.options.FilterPeerByIP == nil {
 		return nil
 	}
 
-	return r.options.FilterPeerByIP(ctx, ip, port)
+	return r.options.FilterPeerByIP(ctx, padr, port)
 }
 
 func (r *Router) filterPeersID(ctx context.Context, id types.NodeID) error {
@@ -484,7 +483,7 @@ func (r *Router) acceptPeers(ctx context.Context, transport Transport) {
 			return
 		}
 
-		incomingIP := conn.RemoteEndpoint().IP
+		incomingIP := conn.RemoteEndpoint().Address
 		if err := r.connTracker.AddConn(incomingIP); err != nil {
 			closeErr := conn.Close()
 			r.logger.Debug("rate limiting incoming peer",
@@ -504,10 +503,10 @@ func (r *Router) acceptPeers(ctx context.Context, transport Transport) {
 
 func (r *Router) openConnection(ctx context.Context, conn Connection) {
 	defer conn.Close()
-	defer r.connTracker.RemoveConn(conn.RemoteEndpoint().IP)
+	defer r.connTracker.RemoveConn(conn.RemoteEndpoint().Address)
 
 	re := conn.RemoteEndpoint()
-	incomingIP := re.IP
+	incomingIP := re.Address
 
 	if err := r.filterPeersIP(ctx, incomingIP, re.Port); err != nil {
 		r.logger.Debug("peer filtered by IP", "ip", incomingIP.String(), "err", err)
