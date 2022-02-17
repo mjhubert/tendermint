@@ -5,6 +5,7 @@ sudo chown -R debian-tor: /var/lib/tor/tendermint
 sudo chmod -R u+rwX,og-rwx /var/lib/tor/tendermint
 echo 'HiddenServiceDir /var/lib/tor/tendermint/' >> /etc/tor/torrc
 echo 'HiddenServicePort 26656 127.0.0.1:26656' >> /etc/tor/torrc
+echo 'HiddenServicePort 26657 127.0.0.1:26657' >> /etc/tor/torrc
 
 curl -O https://storage.googleapis.com/golang/go1.17.7.linux-amd64.tar.gz
 mv go1.17.7.linux-amd64.tar.gz ~
