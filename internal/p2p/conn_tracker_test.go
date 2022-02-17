@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tendermint/tendermint/types"
 )
 
 func randByte() byte {
@@ -36,16 +37,16 @@ func TestConnTracker(t *testing.T) {
 			t.Run("RepeatedAdding", func(t *testing.T) {
 				ct := factory()
 				ip := randLocalIPv4()
-				require.NoError(t, ct.AddConn(ip))
+				require.NoError(t, ct.AddConn(types.ProtocolAddress{IP: ip}))
 				for i := 0; i < 100; i++ {
-					_ = ct.AddConn(ip)
+					_ = ct.AddConn(types.ProtocolAddress{IP: ip})
 				}
 				require.Equal(t, 1, ct.Len())
 			})
 			t.Run("AddingMany", func(t *testing.T) {
 				ct := factory()
 				for i := 0; i < 100; i++ {
-					_ = ct.AddConn(randLocalIPv4())
+					_ = ct.AddConn(types.ProtocolAddress{IP: randLocalIPv4()})
 				}
 				require.Equal(t, 100, ct.Len())
 			})
@@ -53,8 +54,8 @@ func TestConnTracker(t *testing.T) {
 				ct := factory()
 				for i := 0; i < 100; i++ {
 					ip := randLocalIPv4()
-					require.NoError(t, ct.AddConn(ip))
-					ct.RemoveConn(ip)
+					require.NoError(t, ct.AddConn(types.ProtocolAddress{IP: ip}))
+					ct.RemoveConn(types.ProtocolAddress{IP: ip})
 				}
 				require.Equal(t, 0, ct.Len())
 			})
@@ -64,9 +65,9 @@ func TestConnTracker(t *testing.T) {
 		ct := newConnTracker(10, time.Microsecond)
 		for i := 0; i < 10; i++ {
 			ip := randLocalIPv4()
-			require.NoError(t, ct.AddConn(ip))
+			require.NoError(t, ct.AddConn(types.ProtocolAddress{IP: ip}))
 			time.Sleep(2 * time.Microsecond)
-			require.NoError(t, ct.AddConn(ip))
+			require.NoError(t, ct.AddConn(types.ProtocolAddress{IP: ip}))
 		}
 		require.Equal(t, 10, ct.Len())
 	})

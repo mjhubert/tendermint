@@ -3,13 +3,13 @@ package p2p
 import (
 	"context"
 	"errors"
-	"net"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tendermint/tendermint/internal/libs/sync"
 	"github.com/tendermint/tendermint/libs/log"
+	"github.com/tendermint/tendermint/types"
 )
 
 func TestConnectionFiltering(t *testing.T) {
@@ -22,7 +22,7 @@ func TestConnectionFiltering(t *testing.T) {
 		logger:      logger,
 		connTracker: newConnTracker(1, time.Second),
 		options: RouterOptions{
-			FilterPeerByIP: func(ctx context.Context, ip net.IP, port uint16) error {
+			FilterPeerByIP: func(ctx context.Context, address types.ProtocolAddress, port uint16) error {
 				filterByIPCount++
 				return errors.New("mock")
 			},

@@ -13,6 +13,7 @@ import (
 	"github.com/tendermint/tendermint/internal/p2p"
 	"github.com/tendermint/tendermint/internal/p2p/conn"
 	"github.com/tendermint/tendermint/libs/log"
+	"github.com/tendermint/tendermint/types"
 )
 
 // Transports are mainly tested by common tests in transport_test.go, we
@@ -27,7 +28,7 @@ func init() {
 		)
 		err := transport.Listen(p2p.Endpoint{
 			Protocol: p2p.MConnProtocol,
-			IP:       net.IPv4(127, 0, 0, 1),
+			Address:  types.ProtocolAddress{IP: net.IPv4(127, 0, 0, 1)},
 			Port:     0, // assign a random port
 		})
 		require.NoError(t, err)
@@ -77,7 +78,7 @@ func TestMConnTransport_AcceptMaxAcceptedConnections(t *testing.T) {
 	})
 	err := transport.Listen(p2p.Endpoint{
 		Protocol: p2p.MConnProtocol,
-		IP:       net.IPv4(127, 0, 0, 1),
+		Address:  types.ProtocolAddress{IP: net.IPv4(127, 0, 0, 1)},
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, transport.Endpoints())
@@ -138,16 +139,17 @@ func TestMConnTransport_Listen(t *testing.T) {
 		ok       bool
 	}{
 		// Valid v4 and v6 addresses, with mconn and tcp protocols.
-		{p2p.Endpoint{Protocol: p2p.MConnProtocol, IP: net.IPv4zero}, true},
-		{p2p.Endpoint{Protocol: p2p.MConnProtocol, IP: net.IPv4(127, 0, 0, 1)}, true},
-		{p2p.Endpoint{Protocol: p2p.MConnProtocol, IP: net.IPv6zero}, true},
-		{p2p.Endpoint{Protocol: p2p.MConnProtocol, IP: net.IPv6loopback}, true},
-		{p2p.Endpoint{Protocol: p2p.TCPProtocol, IP: net.IPv4zero}, true},
+		{p2p.Endpoint{Protocol: p2p.MConnProtocol, Address: types.ProtocolAddress{Onion: "gt42bqb62i2n4rlo26qpydrx6zertnusycvu5akzsd3mnh5xr4w5giad.onion"}}, true},
+		{p2p.Endpoint{Protocol: p2p.MConnProtocol, Address: types.ProtocolAddress{IP: net.IPv4zero}}, true},
+		{p2p.Endpoint{Protocol: p2p.MConnProtocol, Address: types.ProtocolAddress{IP: net.IPv4(127, 0, 0, 1)}}, true},
+		{p2p.Endpoint{Protocol: p2p.MConnProtocol, Address: types.ProtocolAddress{IP: net.IPv6zero}}, true},
+		{p2p.Endpoint{Protocol: p2p.MConnProtocol, Address: types.ProtocolAddress{IP: net.IPv6loopback}}, true},
+		{p2p.Endpoint{Protocol: p2p.TCPProtocol, Address: types.ProtocolAddress{IP: net.IPv4zero}}, true},
 
 		// Invalid endpoints.
 		{p2p.Endpoint{}, false},
 		{p2p.Endpoint{Protocol: p2p.MConnProtocol, Path: "foo"}, false},
-		{p2p.Endpoint{Protocol: p2p.MConnProtocol, IP: net.IPv4zero, Path: "foo"}, false},
+		{p2p.Endpoint{Protocol: p2p.MConnProtocol, Address: types.ProtocolAddress{IP: net.IPv4zero}, Path: "foo"}, false},
 	}
 	for _, tc := range testcases {
 		tc := tc
@@ -181,12 +183,12 @@ func TestMConnTransport_Listen(t *testing.T) {
 			endpoint := endpoints[0]
 
 			require.Equal(t, p2p.MConnProtocol, endpoint.Protocol)
-			if tc.endpoint.IP.IsUnspecified() {
-				require.True(t, endpoint.IP.IsUnspecified(),
-					"expected unspecified IP, got %v", endpoint.IP)
+			if tc.endpoint.Address.IP.IsUnspecified() {
+				require.True(t, endpoint.Address.IP.IsUnspecified(),
+					"expected unspecified IP, got %v", endpoint.Address.IP)
 			} else {
-				require.True(t, tc.endpoint.IP.Equal(endpoint.IP),
-					"expected %v, got %v", tc.endpoint.IP, endpoint.IP)
+				require.True(t, tc.endpoint.Address.IP.Equal(endpoint.Address.IP),
+					"expected %v, got %v", tc.endpoint.Address.IP, endpoint.Address.IP)
 			}
 			require.NotZero(t, endpoint.Port)
 			require.Empty(t, endpoint.Path)

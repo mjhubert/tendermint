@@ -179,7 +179,7 @@ func (m *MConnTransport) Dial(ctx context.Context, endpoint Endpoint) (Connectio
 			return nil, err
 		}
 
-		tcpConn, err := dialer.Dial("tcp", endpoint.Address.Onion)
+		tcpConn, err := dialer.Dial("tcp", net.JoinHostPort(endpoint.Address.Onion, strconv.Itoa(int(endpoint.Port))))
 
 		if err != nil {
 			return nil, err

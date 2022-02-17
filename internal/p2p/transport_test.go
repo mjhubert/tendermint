@@ -125,12 +125,12 @@ func TestTransport_DialEndpoints(t *testing.T) {
 		require.Error(t, err)
 
 		// Tests for networked endpoints (with IP).
-		if len(endpoint.IP) > 0 && endpoint.Protocol != p2p.MemoryProtocol {
+		if len(endpoint.Address.IP) > 0 && endpoint.Protocol != p2p.MemoryProtocol {
 			for _, tc := range ipTestCases {
 				tc := tc
 				t.Run(tc.ip.String(), func(t *testing.T) {
 					e := endpoint
-					e.IP = tc.ip
+					e.Address.IP = tc.ip
 					conn, err := a.Dial(ctx, e)
 					if tc.ok {
 						require.NoError(t, conn.Close())
@@ -143,7 +143,7 @@ func TestTransport_DialEndpoints(t *testing.T) {
 
 			// Non-networked endpoints should error.
 			noIP := endpoint
-			noIP.IP = nil
+			noIP.Address.IP = nil
 			noIP.Port = 0
 			noIP.Path = "foo"
 			_, err := a.Dial(ctx, noIP)
@@ -465,15 +465,15 @@ func TestEndpoint_NodeAddress(t *testing.T) {
 	}{
 		// Valid endpoints.
 		{
-			p2p.Endpoint{Protocol: "tcp", IP: ip4, Port: 8080, Path: "path"},
+			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4}, Port: 8080, Path: "path"},
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "1.2.3.4", Port: 8080, Path: "path"},
 		},
 		{
-			p2p.Endpoint{Protocol: "tcp", IP: ip4in6, Port: 8080, Path: "path"},
+			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4in6}, Port: 8080, Path: "path"},
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "1.2.3.4", Port: 8080, Path: "path"},
 		},
 		{
-			p2p.Endpoint{Protocol: "tcp", IP: ip6, Port: 8080, Path: "path"},
+			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip6}, Port: 8080, Path: "path"},
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "b10c::1", Port: 8080, Path: "path"},
 		},
 		{
@@ -488,7 +488,7 @@ func TestEndpoint_NodeAddress(t *testing.T) {
 		// Partial (invalid) endpoints.
 		{p2p.Endpoint{}, p2p.NodeAddress{}},
 		{p2p.Endpoint{Protocol: "tcp"}, p2p.NodeAddress{Protocol: "tcp"}},
-		{p2p.Endpoint{IP: net.IPv4(1, 2, 3, 4)}, p2p.NodeAddress{Hostname: "1.2.3.4"}},
+		{p2p.Endpoint{Address: types.ProtocolAddress{IP: net.IPv4(1, 2, 3, 4)}}, p2p.NodeAddress{Hostname: "1.2.3.4"}},
 		{p2p.Endpoint{Port: 8080}, p2p.NodeAddress{}},
 		{p2p.Endpoint{Path: "path"}, p2p.NodeAddress{Path: "path"}},
 	}
@@ -524,23 +524,23 @@ func TestEndpoint_String(t *testing.T) {
 		{p2p.Endpoint{Protocol: "file", Path: "👋"}, "file:///%F0%9F%91%8B"},
 
 		// IPv4 endpoints.
-		{p2p.Endpoint{Protocol: "tcp", IP: ip4}, "tcp://1.2.3.4"},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip4in6}, "tcp://1.2.3.4"},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip4, Port: 8080}, "tcp://1.2.3.4:8080"},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip4, Port: 8080, Path: "/path"}, "tcp://1.2.3.4:8080/path"},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip4, Path: "path/👋"}, "tcp://1.2.3.4/path/%F0%9F%91%8B"},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4}}, "tcp://1.2.3.4"},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4in6}}, "tcp://1.2.3.4"},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4}, Port: 8080}, "tcp://1.2.3.4:8080"},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4}, Port: 8080, Path: "/path"}, "tcp://1.2.3.4:8080/path"},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4}, Path: "path/👋"}, "tcp://1.2.3.4/path/%F0%9F%91%8B"},
 
 		// IPv6 endpoints.
-		{p2p.Endpoint{Protocol: "tcp", IP: ip6}, "tcp://b10c::1"},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip6, Port: 8080}, "tcp://[b10c::1]:8080"},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip6, Port: 8080, Path: "/path"}, "tcp://[b10c::1]:8080/path"},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip6, Path: "path/👋"}, "tcp://b10c::1/path/%F0%9F%91%8B"},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip6}}, "tcp://b10c::1"},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip6}, Port: 8080}, "tcp://[b10c::1]:8080"},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip6}, Port: 8080, Path: "/path"}, "tcp://[b10c::1]:8080/path"},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip6}, Path: "path/👋"}, "tcp://b10c::1/path/%F0%9F%91%8B"},
 
 		// Partial (invalid) endpoints.
 		{p2p.Endpoint{}, ""},
 		{p2p.Endpoint{Protocol: "tcp"}, "tcp:"},
-		{p2p.Endpoint{IP: []byte{1, 2, 3, 4}}, "1.2.3.4"},
-		{p2p.Endpoint{IP: []byte{0xb1, 0x0c, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}}, "b10c::1"},
+		{p2p.Endpoint{Address: types.ProtocolAddress{IP: []byte{1, 2, 3, 4}}}, "1.2.3.4"},
+		{p2p.Endpoint{Address: types.ProtocolAddress{IP: []byte{0xb1, 0x0c, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}}}, "b10c::1"},
 		{p2p.Endpoint{Port: 8080}, ""},
 		{p2p.Endpoint{Path: "foo"}, "/foo"},
 	}
@@ -564,18 +564,18 @@ func TestEndpoint_Validate(t *testing.T) {
 		expectValid bool
 	}{
 		// Valid endpoints.
-		{p2p.Endpoint{Protocol: "tcp", IP: ip4}, true},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip4in6}, true},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip6}, true},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip4, Port: 8008}, true},
-		{p2p.Endpoint{Protocol: "tcp", IP: ip4, Port: 8080, Path: "path"}, true},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4}}, true},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4in6}}, true},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip6}}, true},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4}, Port: 8008}, true},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: ip4}, Port: 8080, Path: "path"}, true},
 		{p2p.Endpoint{Protocol: "memory", Path: "path"}, true},
 
 		// Invalid endpoints.
 		{p2p.Endpoint{}, false},
-		{p2p.Endpoint{IP: ip4}, false},
+		{p2p.Endpoint{Address: types.ProtocolAddress{IP: ip4}}, false},
 		{p2p.Endpoint{Protocol: "tcp"}, false},
-		{p2p.Endpoint{Protocol: "tcp", IP: []byte{1, 2, 3}}, false},
+		{p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: []byte{1, 2, 3}}}, false},
 		{p2p.Endpoint{Protocol: "tcp", Port: 8080, Path: "path"}, false},
 	}
 	for _, tc := range testcases {
