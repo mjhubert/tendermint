@@ -98,14 +98,18 @@ then
       fi
 
       #CONFIGURE TOR
+      unzip -j onion_zip -d /var/lib/tor/tendermint
       cp ~/sentry/auth_private_1 /var/lib/tor/tendermint/authorized_clients/private_1.auth
       cp ~/sentry/auth_private_2 /var/lib/tor/tendermint/authorized_clients/private_2.auth
       cp ~/sentry/auth_private_3 /var/lib/tor/tendermint/authorized_clients/private_3.auth
       cp ~/sentry/auth_private_4 /var/lib/tor/tendermint/authorized_clients/private_4.auth
-      cp ~/sentry/onion_auth /var/lib/tor/onion_auth/tendermint.auth_private      
+      cp ~/sentry/onion_auth /var/lib/tor/onion_auth/tendermint.auth_private
 
-      #CONFIGURE TENDERMINT  
-      sed -i "s/external-address = \"\"/external-address = \"$onionaddress:26656\"/" /root/.tendermint/config/config.toml
+      #CONFIGURE TENDERMINT
+      cd /
+      unzip ~/sentry/tender_zip
+
+      sed -i "s/external-address = \"\"/external-address = \"$ONION_HOST:26656\"/" /root/.tendermint/config/config.toml
       echo "~/tendermint/build/tendermint start --proxy-app=kvstore --p2p.persistent-peers=" > ~/tendermint/build/start.sh
       chmod ugo+x ~/tendermint/build/start.sh
 
@@ -113,6 +117,7 @@ then
 
 fi
 
-sudo -u debian-tor tor &
-sudo -u debian-tor ~/tendermint/build/start.sh
+#sudo -u debian-tor tor &
+#sudo -u debian-tor ~/tendermint/build/start.sh
 
+sleep infinity
