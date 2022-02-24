@@ -1,11 +1,15 @@
 #!/bin/bash
-apt update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt install -y git make curl tor sudo
+apt update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt install -y git make curl tor sudo basez zip 
 mkdir /var/lib/tor/tendermint
 sudo chown -R debian-tor: /var/lib/tor/tendermint
 sudo chmod -R u+rwX,og-rwx /var/lib/tor/tendermint
 echo 'HiddenServiceDir /var/lib/tor/tendermint/' >> /etc/tor/torrc
 echo 'HiddenServicePort 26656 127.0.0.1:26656' >> /etc/tor/torrc
 echo 'HiddenServicePort 26657 127.0.0.1:26657' >> /etc/tor/torrc
+echo 'ClientOnionAuthDir /var/lib/tor/onion_auth' >> /etc/tor/torrc
+mkdir /var/lib/tor/onion_auth
+sudo chown -R debian-tor: /var/lib/tor/onion_auth
+sudo chmod -R u+rwX,og-rwx /var/lib/tor/onion_auth
 
 curl -O https://storage.googleapis.com/golang/go1.17.7.linux-amd64.tar.gz
 mv go1.17.7.linux-amd64.tar.gz ~
@@ -25,5 +29,4 @@ git pull
 make install
 make build
 cd build
-
 

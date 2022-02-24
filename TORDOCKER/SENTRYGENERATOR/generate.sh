@@ -66,17 +66,12 @@ echo "ONION_HOST_BETA=$ONION_BETA.onion"
 echo "ONION_HOST_GAMMA=$ONION_GAMMA.onion"
 echo "ONION_HOST_PSI=$ONION_PSI.onion"
 echo "ONION_HOST_OMEGA=$ONION_OMEGA.onion"
-echo "ONION_KEY_PUB_ALPHA=`cat /onions/alpha/$ONION_ALPHA.onion/hs_ed25519_public_key  | base32 -w 0`"
-echo "ONION_KEY_PUB_BETA=`cat /onions/beta/$ONION_BETA.onion/hs_ed25519_public_key  | base32 -w 0`"
-echo "ONION_KEY_PUB_GAMMA=`cat /onions/gamma/$ONION_GAMMA.onion/hs_ed25519_public_key  | base32 -w 0`"
-echo "ONION_KEY_PUB_PSI=`cat /onions/psi/$ONION_PSI.onion/hs_ed25519_public_key  | base32 -w 0`"
-echo "ONION_KEY_PUB_OMEGA=`cat /onions/omega/$ONION_OMEGA.onion/hs_ed25519_public_key  | base32 -w 0`"
 
-echo "ONION_KEY_SEC_ALPHA=`cat /onions/alpha/$ONION_ALPHA.onion/hs_ed25519_secret_key  | base32 -w 0`"
-echo "ONION_KEY_SEC_BETA=`cat /onions/beta/$ONION_BETA.onion/hs_ed25519_secret_key  | base32 -w 0`"
-echo "ONION_KEY_SEC_GAMMA=`cat /onions/gamma/$ONION_GAMMA.onion/hs_ed25519_secret_key  | base32 -w 0`"
-echo "ONION_KEY_SEC_PSI=`cat /onions/psi/$ONION_PSI.onion/hs_ed25519_secret_key  | base32 -w 0`"
-echo "ONION_KEY_SEC_OMEGA=`cat /onions/omega/$ONION_OMEGA.onion/hs_ed25519_secret_key  | base32 -w 0`"
+echo "ONION_ZIP_ALPHA=`zip -r - /onions/alpha 2> /dev/null | base32 -w 0`"
+echo "ONION_ZIP_BETA=`zip -r - /onions/beta 2> /dev/null | base32 -w 0`"
+echo "ONION_ZIP_GAMMA=`zip -r - /onions/gamma 2> /dev/null | base32 -w 0`"
+echo "ONION_ZIP_PSI=`zip -r - /onions/psi 2> /dev/null | base32 -w 0`"
+echo "ONION_ZIP_OMEGA=`zip -r - /onions/omega 2> /dev/null | base32 -w 0`"
 
 echo "#TOR CLIENT AUTHENTICATION"
 
@@ -113,11 +108,37 @@ echo "AUTH_PRIVATE_OMEGA_GAMMA=$ONION_GAMMA::descriptor:x25519:`cat /tmp/fullnod
 
 #Generate TENDERMINT IDs
 
-TENDERID_ALPHA="ALPHA"
-TENDERID_BETA="BETA"
-TENDERID_GAMMA="GAMMA"
-TENDERID_PSI="PSI"
-TENDERID_OMEGA="OMEGA"
+rm -rf ~/.tendermint
+cd ~/tendermint/build
+./tendermint init validator > /dev/null 2>&1
+echo "TENDER_ZIP_ALPHA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
+TENDERID_ALPHA="`./tendermint show-node-id`"
+
+rm -rf ~/.tendermint
+cd ~/tendermint/build
+./tendermint init validator > /dev/null 2>&1
+echo "TENDER_ZIP_BETA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
+TENDERID_BETA="`./tendermint show-node-id`"
+
+rm -rf ~/.tendermint
+cd ~/tendermint/build
+./tendermint init validator > /dev/null 2>&1
+echo "TENDER_ZIP_GAMMA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
+TENDERID_GAMMA="`./tendermint show-node-id`"
+
+rm -rf ~/.tendermint
+cd ~/tendermint/build
+./tendermint init full > /dev/null 2>&1
+echo "TENDER_ZIP_PSI=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
+TENDERID_PSI="`./tendermint show-node-id`"
+
+rm -rf ~/.tendermint
+cd ~/tendermint/build
+./tendermint init full > /dev/null 2>&1
+echo "TENDER_ZIP_OMEGA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
+TENDERID_OMEGA="`./tendermint show-node-id`"
+
+rm -rf ~/.tendermint
 
 echo "#TENDERMINT PEERS"
 echo "PEER_ALPHA=$TENDERID_ALPHA@$ONION_ALPHA.onion:26656"
