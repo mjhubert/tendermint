@@ -54,3 +54,5 @@ proto/tendermint/p2p/*.proto
 proto/tendermint/statesync/*.proto
 proto/tendermint/types/*.proto
 proto/tendermint/version/*.proto
+TORDOCKER/TENDERMINT/*.env
+

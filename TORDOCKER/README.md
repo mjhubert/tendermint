@@ -2,8 +2,11 @@
 
 
 https://community.torproject.org/onion-services/advanced/client-auth/
+
 https://github.com/mikeperry-tor/vanguards
+
 https://riseup.net/en/security/network-security/tor/onionservices-best-practices
+
 https://matt.traudt.xyz/posts/2019-01-19-creating-private-v3-onion-services/
 
 
