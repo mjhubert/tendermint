@@ -29,11 +29,12 @@ then
       role1="ALPHA"
       role2="BETA"
       role3="GAMMA"
-      role4="PSI"
-      role5="OMEGA"
+      role4="DELTA"
+      role5="PSI"
+      role6="OMEGA"
 
       p=0
-      for i in {1..5}; do
+      for i in {1..6}; do
       rvarn="role$i"
       declare "currol=${!rvarn}"
       if [ $currol != "$SENTRY_ROLE" ]
@@ -56,9 +57,10 @@ then
       role1="ALPHA"
       role2="BETA"
       role3="GAMMA"
+      role4="DELTA"
 
       p=0
-      for i in {1..3}; do
+      for i in {1..4}; do
       rvarn="role$i"
       declare "currol=${!rvarn}"
       if [ $currol != "$SENTRY_ROLE" ]
@@ -113,21 +115,25 @@ then
       echo "$AUTH_PRIVATE_1" > auth_private_1
       echo "$AUTH_PRIVATE_2" > auth_private_2
       echo "$AUTH_PRIVATE_3" > auth_private_3      
+      echo "$AUTH_PRIVATE_4" > auth_private_4
       echo "$AUTH_1" > auth_1
       echo "$AUTH_2" > auth_2
       echo "$AUTH_3" > auth_3
       echo "$AUTH_4" > auth_4
+      echo "$AUTH_5" > auth_5
 
       echo "$PEER_VALIDATOR_1" > peer_validator_1
       echo "$PEER_VALIDATOR_2" > peer_validator_2
+      echo "$PEER_VALIDATOR_3" > peer_validator_3
       echo "$PEER_VALIDATOR_ID_1" > peer_validator_id_1
       echo "$PEER_VALIDATOR_ID_2" > peer_validator_id_2
+      echo "$PEER_VALIDATOR_ID_3" > peer_validator_id_3
       echo "$PEER_FULL_1" > peer_full_1
 
       if [ $TENDERMINT_MODE == "FULL" ] 
       then
-       echo $PEER_VALIDATOR_3 > peer_validator_3   
-       echo $PEER_VALIDATOR_ID_3 > peer_validator_id_3   
+       echo $PEER_VALIDATOR_4 > peer_validator_4   
+       echo $PEER_VALIDATOR_ID_4 > peer_validator_id_4
       else
        echo $PEER_FULL_2 > peer_full_2 
       fi
@@ -145,10 +151,11 @@ then
       sudo chmod -R u+rwX,og-rwx /var/lib/tor/onion_auth
       cp ~/sentry/auth_private_1 /var/lib/tor/onion_auth/peer_1.auth_private
       cp ~/sentry/auth_private_2 /var/lib/tor/onion_auth/peer_2.auth_private
+      cp ~/sentry/auth_private_3 /var/lib/tor/onion_auth/peer_3.auth_private
 
       if [ $TENDERMINT_MODE == "FULL" ]
       then
-            cp ~/sentry/auth_private_3 /var/lib/tor/onion_auth/peer_3.auth_private
+            cp ~/sentry/auth_private_4 /var/lib/tor/onion_auth/peer_4.auth_private
       fi
 
       if [ $TENDERMINT_MODE == "VALIDATOR" ] 
@@ -160,6 +167,7 @@ then
             cp ~/sentry/auth_2 /var/lib/tor/tendermint/authorized_clients/private_2.auth
             cp ~/sentry/auth_3 /var/lib/tor/tendermint/authorized_clients/private_3.auth
             cp ~/sentry/auth_4 /var/lib/tor/tendermint/authorized_clients/private_4.auth
+            cp ~/sentry/auth_5 /var/lib/tor/tendermint/authorized_clients/private_5.auth
       fi
 
       echo 'HiddenServiceDir /var/lib/tor/tendermint/' >> /etc/tor/torrc
@@ -178,12 +186,12 @@ then
 
       if [ $TENDERMINT_MODE == "FULL" ] 
       then
-            sed -i "s/private-peer-ids = \"\"/private-peer-ids = \"${PEER_VALIDATOR_ID_1},${PEER_VALIDATOR_ID_2},${PEER_VALIDATOR_ID_3}\"/" /root/.tendermint/config/config.toml
-            sed -i "s/persistent-peers = \"\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3},${PEER_FULL_1}\"/" /root/.tendermint/config/config.toml
+            sed -i "s/private-peer-ids = \"\"/private-peer-ids = \"${PEER_VALIDATOR_ID_1},${PEER_VALIDATOR_ID_2},${PEER_VALIDATOR_ID_3},${PEER_VALIDATOR_ID_4}\"/" /root/.tendermint/config/config.toml
+            sed -i "s/persistent-peers = \"\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3},${PEER_VALIDATOR_4},${PEER_FULL_1}\"/" /root/.tendermint/config/config.toml
       else
             #sed -i "s/pex = true/pex = false/" /root/.tendermint/config/config.toml #error
-            sed -i "s/private-peer-ids = \"\"/private-peer-ids = \"${PEER_VALIDATOR_ID_1},${PEER_VALIDATOR_ID_2}\"/" /root/.tendermint/config/config.toml
-            sed -i "s/persistent-peers = \"\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_FULL_1},${PEER_FULL_2}\"/" /root/.tendermint/config/config.toml
+            sed -i "s/private-peer-ids = \"\"/private-peer-ids = \"${PEER_VALIDATOR_ID_1},${PEER_VALIDATOR_ID_2},${PEER_VALIDATOR_ID_3}\"/" /root/.tendermint/config/config.toml
+            sed -i "s/persistent-peers = \"\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3}\"/" /root/.tendermint/config/config.toml
       fi
 
       sed -i "s/external-address = \"\"/external-address = \"$ONION_HOST:26656\"/" /root/.tendermint/config/config.toml
