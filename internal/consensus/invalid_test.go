@@ -2,11 +2,14 @@ package consensus
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/tendermint/tendermint/internal/eventbus"
 	"github.com/tendermint/tendermint/internal/p2p"
 	"github.com/tendermint/tendermint/libs/bytes"
@@ -18,7 +21,7 @@ import (
 )
 
 func TestReactorInvalidPrecommit(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	config := configSetup(t)
@@ -26,7 +29,7 @@ func TestReactorInvalidPrecommit(t *testing.T) {
 	n := 4
 	states, cleanup := makeConsensusState(ctx, t,
 		config, n, "consensus_reactor_test",
-		newMockTickerFunc(true), newKVStore)
+		newMockTickerFunc(true))
 	t.Cleanup(cleanup)
 
 	for i := 0; i < 4; i++ {
@@ -47,11 +50,13 @@ func TestReactorInvalidPrecommit(t *testing.T) {
 	byzState := rts.states[node.NodeID]
 	byzReactor := rts.reactors[node.NodeID]
 
+	signal := make(chan struct{})
 	// Update the doPrevote function to just send a valid precommit for a random
 	// block and otherwise disable the priv validator.
 	byzState.mtx.Lock()
 	privVal := byzState.privValidator
 	byzState.doPrevote = func(ctx context.Context, height int64, round int32) {
+		defer close(signal)
 		invalidDoPrevoteFunc(ctx, t, height, round, byzState, byzReactor, privVal)
 	}
 	byzState.mtx.Unlock()
@@ -68,14 +73,31 @@ func TestReactorInvalidPrecommit(t *testing.T) {
 			go func(s eventbus.Subscription) {
 				defer wg.Done()
 				_, err := s.Next(ctx)
+				if ctx.Err() != nil {
+					return
+				}
 				if !assert.NoError(t, err) {
 					cancel() // cancel other subscribers on failure
 				}
 			}(sub)
 		}
 	}
+	wait := make(chan struct{})
+	go func() { defer close(wait); wg.Wait() }()
 
-	wg.Wait()
+	select {
+	case <-wait:
+		if _, ok := <-signal; !ok {
+			t.Fatal("test condition did not fire")
+		}
+	case <-ctx.Done():
+		if _, ok := <-signal; !ok {
+			t.Fatal("test condition did not fire after timeout")
+			return
+		}
+	case <-signal:
+		// test passed
+	}
 }
 
 func invalidDoPrevoteFunc(
@@ -123,13 +145,30 @@ func invalidDoPrevoteFunc(
 		cs.privValidator = nil // disable priv val so we don't do normal votes
 		cs.mtx.Unlock()
 
+		r.mtx.Lock()
+		ids := make([]types.NodeID, 0, len(r.peers))
 		for _, ps := range r.peers {
-			require.NoError(t, r.voteCh.Send(ctx, p2p.Envelope{
-				To: ps.peerID,
+			ids = append(ids, ps.peerID)
+		}
+		r.mtx.Unlock()
+
+		count := 0
+		for _, peerID := range ids {
+			count++
+			err := r.voteCh.Send(ctx, p2p.Envelope{
+				To: peerID,
 				Message: &tmcons.Vote{
 					Vote: precommit.ToProto(),
 				},
-			}))
+			})
+			// we want to have sent some of these votes,
+			// but if the test completes without erroring
+			// or not sending any messages, then we should
+			// error.
+			if errors.Is(err, context.Canceled) && count > 0 {
+				break
+			}
+			require.NoError(t, err)
 		}
 	}()
 }

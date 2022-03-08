@@ -401,7 +401,7 @@ func (store dbStore) reverseBatchDelete(batch dbm.Batch, start, end []byte) ([]b
 //
 // See merkle.SimpleHashFromByteSlices
 func ABCIResponsesResultsHash(ar *tmstate.ABCIResponses) []byte {
-	return types.NewResults(ar.DeliverTxs).Hash()
+	return types.NewResults(ar.FinalizeBlock.TxResults).Hash()
 }
 
 // LoadABCIResponses loads the ABCIResponses for the given height from the
@@ -442,15 +442,15 @@ func (store dbStore) SaveABCIResponses(height int64, abciResponses *tmstate.ABCI
 }
 
 func (store dbStore) saveABCIResponses(height int64, abciResponses *tmstate.ABCIResponses) error {
-	var dtxs []*abci.ResponseDeliverTx
+	var dtxs []*abci.ExecTxResult
 	// strip nil values,
-	for _, tx := range abciResponses.DeliverTxs {
+	for _, tx := range abciResponses.FinalizeBlock.TxResults {
 		if tx != nil {
 			dtxs = append(dtxs, tx)
 		}
 	}
 
-	abciResponses.DeliverTxs = dtxs
+	abciResponses.FinalizeBlock.TxResults = dtxs
 
 	bz, err := abciResponses.Marshal()
 	if err != nil {
@@ -504,8 +504,12 @@ func (store dbStore) LoadValidators(height int64) (*types.ValidatorSet, error) {
 		if err != nil {
 			return nil, err
 		}
+		h, err := tmmath.SafeConvertInt32(height - lastStoredHeight)
+		if err != nil {
+			return nil, err
+		}
 
-		vs.IncrementProposerPriority(tmmath.SafeConvertInt32(height - lastStoredHeight)) // mutate
+		vs.IncrementProposerPriority(h) // mutate
 		vi2, err := vs.ToProto()
 		if err != nil {
 			return nil, err

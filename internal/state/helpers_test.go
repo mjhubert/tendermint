@@ -11,16 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 	dbm "github.com/tendermint/tm-db"
 
-	abciclient "github.com/tendermint/tendermint/abci/client"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/crypto/ed25519"
 	"github.com/tendermint/tendermint/crypto/encoding"
-	"github.com/tendermint/tendermint/internal/proxy"
 	sm "github.com/tendermint/tendermint/internal/state"
 	sf "github.com/tendermint/tendermint/internal/state/test/factory"
 	"github.com/tendermint/tendermint/internal/test/factory"
-	"github.com/tendermint/tendermint/libs/log"
 	tmrand "github.com/tendermint/tendermint/libs/rand"
 	tmtime "github.com/tendermint/tendermint/libs/time"
 	tmstate "github.com/tendermint/tendermint/proto/tendermint/state"
@@ -31,12 +28,6 @@ import (
 type paramsChangeTestCase struct {
 	height int64
 	params types.ConsensusParams
-}
-
-func newTestApp() proxy.AppConns {
-	app := &testApp{}
-	cc := abciclient.NewLocalCreator(app)
-	return proxy.NewAppConns(cc, log.NewNopLogger(), proxy.NopMetrics())
 }
 
 func makeAndCommitGoodBlock(
@@ -75,7 +66,7 @@ func makeAndApplyGoodBlock(
 	block, _, err := state.MakeBlock(height, factory.MakeTenTxs(height), lastCommit, evidence, proposerAddr)
 	require.NoError(t, err)
 
-	require.NoError(t, blockExec.ValidateBlock(state, block))
+	require.NoError(t, blockExec.ValidateBlock(ctx, state, block))
 	blockID := types.BlockID{Hash: block.Hash(),
 		PartSetHeader: types.PartSetHeader{Total: 3, Hash: tmrand.Bytes(32)}}
 	state, err = blockExec.ApplyBlock(ctx, state, blockID, block)
@@ -155,10 +146,7 @@ func makeHeaderPartsResponsesValPubKeyChange(
 
 	block, err := sf.MakeBlock(state, state.LastBlockHeight+1, new(types.Commit))
 	require.NoError(t, err)
-	abciResponses := &tmstate.ABCIResponses{
-		BeginBlock: &abci.ResponseBeginBlock{},
-		EndBlock:   &abci.ResponseEndBlock{ValidatorUpdates: nil},
-	}
+	abciResponses := &tmstate.ABCIResponses{}
 	// If the pubkey is new, remove the old and add the new.
 	_, val := state.NextValidators.GetByIndex(0)
 	if !bytes.Equal(pubkey.Bytes(), val.PubKey.Bytes()) {
@@ -167,7 +155,7 @@ func makeHeaderPartsResponsesValPubKeyChange(
 		pbPk, err := encoding.PubKeyToProto(pubkey)
 		require.NoError(t, err)
 
-		abciResponses.EndBlock = &abci.ResponseEndBlock{
+		abciResponses.FinalizeBlock = &abci.ResponseFinalizeBlock{
 			ValidatorUpdates: []abci.ValidatorUpdate{
 				{PubKey: vPbPk, Power: 0},
 				{PubKey: pbPk, Power: 10},
@@ -188,18 +176,16 @@ func makeHeaderPartsResponsesValPowerChange(
 	block, err := sf.MakeBlock(state, state.LastBlockHeight+1, new(types.Commit))
 	require.NoError(t, err)
 
-	abciResponses := &tmstate.ABCIResponses{
-		BeginBlock: &abci.ResponseBeginBlock{},
-		EndBlock:   &abci.ResponseEndBlock{ValidatorUpdates: nil},
-	}
+	abciResponses := &tmstate.ABCIResponses{}
 
+	abciResponses.FinalizeBlock = &abci.ResponseFinalizeBlock{}
 	// If the pubkey is new, remove the old and add the new.
 	_, val := state.NextValidators.GetByIndex(0)
 	if val.VotingPower != power {
 		vPbPk, err := encoding.PubKeyToProto(val.PubKey)
 		require.NoError(t, err)
 
-		abciResponses.EndBlock = &abci.ResponseEndBlock{
+		abciResponses.FinalizeBlock = &abci.ResponseFinalizeBlock{
 			ValidatorUpdates: []abci.ValidatorUpdate{
 				{PubKey: vPbPk, Power: power},
 			},
@@ -220,8 +206,7 @@ func makeHeaderPartsResponsesParams(
 	require.NoError(t, err)
 	pbParams := params.ToProto()
 	abciResponses := &tmstate.ABCIResponses{
-		BeginBlock: &abci.ResponseBeginBlock{},
-		EndBlock:   &abci.ResponseEndBlock{ConsensusParamUpdates: &pbParams},
+		FinalizeBlock: &abci.ResponseFinalizeBlock{ConsensusParamUpdates: &pbParams},
 	}
 	return block.Header, types.BlockID{Hash: block.Hash(), PartSetHeader: types.PartSetHeader{}}, abciResponses
 }
@@ -298,22 +283,29 @@ func (app *testApp) Info(req abci.RequestInfo) (resInfo abci.ResponseInfo) {
 	return abci.ResponseInfo{}
 }
 
-func (app *testApp) BeginBlock(req abci.RequestBeginBlock) abci.ResponseBeginBlock {
-	app.CommitVotes = req.LastCommitInfo.Votes
+func (app *testApp) FinalizeBlock(req abci.RequestFinalizeBlock) abci.ResponseFinalizeBlock {
+	app.CommitVotes = req.DecidedLastCommit.Votes
 	app.ByzantineValidators = req.ByzantineValidators
-	return abci.ResponseBeginBlock{}
-}
 
-func (app *testApp) EndBlock(req abci.RequestEndBlock) abci.ResponseEndBlock {
-	return abci.ResponseEndBlock{
+	resTxs := make([]*abci.ExecTxResult, len(req.Txs))
+	for i, tx := range req.Txs {
+		if len(tx) > 0 {
+			resTxs[i] = &abci.ExecTxResult{Code: abci.CodeTypeOK}
+		} else {
+			resTxs[i] = &abci.ExecTxResult{Code: abci.CodeTypeOK + 10} // error
+		}
+	}
+
+	return abci.ResponseFinalizeBlock{
 		ValidatorUpdates: app.ValidatorUpdates,
 		ConsensusParamUpdates: &tmproto.ConsensusParams{
 			Version: &tmproto.VersionParams{
-				AppVersion: 1}}}
-}
-
-func (app *testApp) DeliverTx(req abci.RequestDeliverTx) abci.ResponseDeliverTx {
-	return abci.ResponseDeliverTx{Events: []abci.Event{}}
+				AppVersion: 1,
+			},
+		},
+		Events:    []abci.Event{},
+		TxResults: resTxs,
+	}
 }
 
 func (app *testApp) CheckTx(req abci.RequestCheckTx) abci.ResponseCheckTx {
@@ -331,8 +323,8 @@ func (app *testApp) Query(reqQuery abci.RequestQuery) (resQuery abci.ResponseQue
 func (app *testApp) ProcessProposal(req abci.RequestProcessProposal) abci.ResponseProcessProposal {
 	for _, tx := range req.Txs {
 		if len(tx) == 0 {
-			return abci.ResponseProcessProposal{Result: abci.ResponseProcessProposal_REJECT}
+			return abci.ResponseProcessProposal{Accept: false}
 		}
 	}
-	return abci.ResponseProcessProposal{Result: abci.ResponseProcessProposal_ACCEPT}
+	return abci.ResponseProcessProposal{Accept: true}
 }

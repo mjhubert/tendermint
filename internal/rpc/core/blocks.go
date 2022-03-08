@@ -193,8 +193,6 @@ func (env *Environment) Commit(ctx context.Context, heightPtr *int64) (*coretype
 // If no height is provided, it will fetch results for the latest block.
 //
 // Results are for the height of the block containing the txs.
-// Thus response.results.deliver_tx[5] is the results of executing
-// getBlock(h).Txs[5]
 // More: https://docs.tendermint.com/master/rpc/#/Info/block_results
 func (env *Environment) BlockResults(ctx context.Context, heightPtr *int64) (*coretypes.ResultBlockResults, error) {
 	height, err := env.getHeight(env.BlockStore.Height(), heightPtr)
@@ -208,23 +206,22 @@ func (env *Environment) BlockResults(ctx context.Context, heightPtr *int64) (*co
 	}
 
 	var totalGasUsed int64
-	for _, tx := range results.GetDeliverTxs() {
-		totalGasUsed += tx.GetGasUsed()
+	for _, res := range results.FinalizeBlock.GetTxResults() {
+		totalGasUsed += res.GetGasUsed()
 	}
 
 	return &coretypes.ResultBlockResults{
 		Height:                height,
-		TxsResults:            results.DeliverTxs,
+		TxsResults:            results.FinalizeBlock.TxResults,
 		TotalGasUsed:          totalGasUsed,
-		BeginBlockEvents:      results.BeginBlock.Events,
-		EndBlockEvents:        results.EndBlock.Events,
-		ValidatorUpdates:      results.EndBlock.ValidatorUpdates,
-		ConsensusParamUpdates: results.EndBlock.ConsensusParamUpdates,
+		FinalizeBlockEvents:   results.FinalizeBlock.Events,
+		ValidatorUpdates:      results.FinalizeBlock.ValidatorUpdates,
+		ConsensusParamUpdates: results.FinalizeBlock.ConsensusParamUpdates,
 	}, nil
 }
 
-// BlockSearch searches for a paginated set of blocks matching BeginBlock and
-// EndBlock event search criteria.
+// BlockSearch searches for a paginated set of blocks matching the provided
+// query.
 func (env *Environment) BlockSearch(
 	ctx context.Context,
 	query string,

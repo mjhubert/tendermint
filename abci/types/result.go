@@ -34,6 +34,16 @@ func (r ResponseDeliverTx) IsErr() bool {
 }
 
 // IsOK returns true if Code is OK.
+func (r ExecTxResult) IsOK() bool {
+	return r.Code == CodeTypeOK
+}
+
+// IsErr returns true if Code is something other than OK.
+func (r ExecTxResult) IsErr() bool {
+	return r.Code != CodeTypeOK
+}
+
+// IsOK returns true if Code is OK.
 func (r ResponseQuery) IsOK() bool {
 	return r.Code == CodeTypeOK
 }
@@ -56,11 +66,6 @@ func (r ResponseVerifyVoteExtension) IsOK() bool {
 // IsErr returns true if Code is something other than OK.
 func (r ResponseVerifyVoteExtension) IsErr() bool {
 	return r.Result != ResponseVerifyVoteExtension_ACCEPT
-}
-
-// IsOK returns true if Code is OK
-func (r ResponseProcessProposal) IsOK() bool {
-	return r.Result == ResponseProcessProposal_ACCEPT
 }
 
 //---------------------------------------------------------------------------

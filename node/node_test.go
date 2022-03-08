@@ -39,7 +39,7 @@ import (
 )
 
 func TestNodeStartStop(t *testing.T) {
-	cfg, err := config.ResetTestRoot("node_node_test")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_node_test")
 	require.NoError(t, err)
 
 	defer os.RemoveAll(cfg.RootDir)
@@ -55,11 +55,10 @@ func TestNodeStartStop(t *testing.T) {
 	n, ok := ns.(*nodeImpl)
 	require.True(t, ok)
 	t.Cleanup(func() {
-		if n.IsRunning() {
-			bcancel()
-			n.Wait()
-		}
+		bcancel()
+		n.Wait()
 	})
+	t.Cleanup(leaktest.CheckTimeout(t, time.Second))
 
 	require.NoError(t, n.Start(ctx))
 	// wait for the node to produce a block
@@ -98,13 +97,14 @@ func getTestNode(ctx context.Context, t *testing.T, conf *config.Config, logger 
 			ns.Wait()
 		}
 	})
+
 	t.Cleanup(leaktest.CheckTimeout(t, time.Second))
 
 	return n
 }
 
 func TestNodeDelayedStart(t *testing.T) {
-	cfg, err := config.ResetTestRoot("node_delayed_start_test")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_delayed_start_test")
 	require.NoError(t, err)
 
 	defer os.RemoveAll(cfg.RootDir)
@@ -126,7 +126,7 @@ func TestNodeDelayedStart(t *testing.T) {
 }
 
 func TestNodeSetAppVersion(t *testing.T) {
-	cfg, err := config.ResetTestRoot("node_app_version_test")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_app_version_test")
 	require.NoError(t, err)
 	defer os.RemoveAll(cfg.RootDir)
 
@@ -159,7 +159,7 @@ func TestNodeSetPrivValTCP(t *testing.T) {
 
 	logger := log.NewNopLogger()
 
-	cfg, err := config.ResetTestRoot("node_priv_val_tcp_test")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_priv_val_tcp_test")
 	require.NoError(t, err)
 	defer os.RemoveAll(cfg.RootDir)
 	cfg.PrivValidator.ListenAddr = addr
@@ -178,7 +178,7 @@ func TestNodeSetPrivValTCP(t *testing.T) {
 		err := signerServer.Start(ctx)
 		require.NoError(t, err)
 	}()
-	defer signerServer.Stop() //nolint:errcheck // ignore for tests
+	defer signerServer.Stop()
 
 	genDoc, err := defaultGenesisDocProviderFunc(cfg)()
 	require.NoError(t, err)
@@ -196,7 +196,7 @@ func TestPrivValidatorListenAddrNoProtocol(t *testing.T) {
 
 	addrNoPrefix := testFreeAddr(t)
 
-	cfg, err := config.ResetTestRoot("node_priv_val_tcp_test")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_priv_val_tcp_test")
 	require.NoError(t, err)
 	defer os.RemoveAll(cfg.RootDir)
 	cfg.PrivValidator.ListenAddr = addrNoPrefix
@@ -220,7 +220,7 @@ func TestNodeSetPrivValIPC(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg, err := config.ResetTestRoot("node_priv_val_tcp_test")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_priv_val_tcp_test")
 	require.NoError(t, err)
 	defer os.RemoveAll(cfg.RootDir)
 	cfg.PrivValidator.ListenAddr = "unix://" + tmpfile
@@ -242,7 +242,7 @@ func TestNodeSetPrivValIPC(t *testing.T) {
 		err := pvsc.Start(ctx)
 		require.NoError(t, err)
 	}()
-	defer pvsc.Stop() //nolint:errcheck // ignore for tests
+	defer pvsc.Stop()
 	genDoc, err := defaultGenesisDocProviderFunc(cfg)()
 	require.NoError(t, err)
 
@@ -267,14 +267,14 @@ func TestCreateProposalBlock(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg, err := config.ResetTestRoot("node_create_proposal")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_create_proposal")
 	require.NoError(t, err)
 	defer os.RemoveAll(cfg.RootDir)
 
 	logger := log.NewNopLogger()
 
-	cc := abciclient.NewLocalCreator(kvstore.NewApplication())
-	proxyApp := proxy.NewAppConns(cc, logger, proxy.NopMetrics())
+	cc := abciclient.NewLocalClient(logger, kvstore.NewApplication())
+	proxyApp := proxy.New(cc, logger, proxy.NopMetrics())
 	err = proxyApp.Start(ctx)
 	require.NoError(t, err)
 
@@ -291,15 +291,13 @@ func TestCreateProposalBlock(t *testing.T) {
 	mp := mempool.NewTxMempool(
 		logger.With("module", "mempool"),
 		cfg.Mempool,
-		proxyApp.Mempool(),
-		state.LastBlockHeight,
+		proxyApp,
 	)
 
 	// Make EvidencePool
 	evidenceDB := dbm.NewMemDB()
 	blockStore := store.NewBlockStore(dbm.NewMemDB())
-	evidencePool, err := evidence.NewPool(logger, evidenceDB, stateStore, blockStore)
-	require.NoError(t, err)
+	evidencePool := evidence.NewPool(logger, evidenceDB, stateStore, blockStore, evidence.NopMetrics(), nil)
 
 	// fill the evidence pool with more evidence
 	// than can fit in a block
@@ -328,7 +326,7 @@ func TestCreateProposalBlock(t *testing.T) {
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
 		logger,
-		proxyApp.Consensus(),
+		proxyApp,
 		mp,
 		evidencePool,
 		blockStore,
@@ -340,6 +338,7 @@ func TestCreateProposalBlock(t *testing.T) {
 		height,
 		state, commit,
 		proposerAddr,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -356,7 +355,7 @@ func TestCreateProposalBlock(t *testing.T) {
 	}
 	assert.EqualValues(t, partSetFromHeader.ByteSize(), partSet.ByteSize())
 
-	err = blockExec.ValidateBlock(state, block)
+	err = blockExec.ValidateBlock(ctx, state, block)
 	assert.NoError(t, err)
 }
 
@@ -364,15 +363,15 @@ func TestMaxTxsProposalBlockSize(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg, err := config.ResetTestRoot("node_create_proposal")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_create_proposal")
 	require.NoError(t, err)
 
 	defer os.RemoveAll(cfg.RootDir)
 
 	logger := log.NewNopLogger()
 
-	cc := abciclient.NewLocalCreator(kvstore.NewApplication())
-	proxyApp := proxy.NewAppConns(cc, logger, proxy.NopMetrics())
+	cc := abciclient.NewLocalClient(logger, kvstore.NewApplication())
+	proxyApp := proxy.New(cc, logger, proxy.NopMetrics())
 	err = proxyApp.Start(ctx)
 	require.NoError(t, err)
 
@@ -390,8 +389,7 @@ func TestMaxTxsProposalBlockSize(t *testing.T) {
 	mp := mempool.NewTxMempool(
 		logger.With("module", "mempool"),
 		cfg.Mempool,
-		proxyApp.Mempool(),
-		state.LastBlockHeight,
+		proxyApp,
 	)
 
 	// fill the mempool with one txs just below the maximum size
@@ -403,7 +401,7 @@ func TestMaxTxsProposalBlockSize(t *testing.T) {
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
 		logger,
-		proxyApp.Consensus(),
+		proxyApp,
 		mp,
 		sm.EmptyEvidencePool{},
 		blockStore,
@@ -415,6 +413,7 @@ func TestMaxTxsProposalBlockSize(t *testing.T) {
 		height,
 		state, commit,
 		proposerAddr,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -432,14 +431,14 @@ func TestMaxProposalBlockSize(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg, err := config.ResetTestRoot("node_create_proposal")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_create_proposal")
 	require.NoError(t, err)
 	defer os.RemoveAll(cfg.RootDir)
 
 	logger := log.NewNopLogger()
 
-	cc := abciclient.NewLocalCreator(kvstore.NewApplication())
-	proxyApp := proxy.NewAppConns(cc, logger, proxy.NopMetrics())
+	cc := abciclient.NewLocalClient(logger, kvstore.NewApplication())
+	proxyApp := proxy.New(cc, logger, proxy.NopMetrics())
 	err = proxyApp.Start(ctx)
 	require.NoError(t, err)
 
@@ -454,8 +453,7 @@ func TestMaxProposalBlockSize(t *testing.T) {
 	mp := mempool.NewTxMempool(
 		logger.With("module", "mempool"),
 		cfg.Mempool,
-		proxyApp.Mempool(),
-		state.LastBlockHeight,
+		proxyApp,
 	)
 
 	// fill the mempool with one txs just below the maximum size
@@ -474,7 +472,7 @@ func TestMaxProposalBlockSize(t *testing.T) {
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
 		logger,
-		proxyApp.Consensus(),
+		proxyApp,
 		mp,
 		sm.EmptyEvidencePool{},
 		blockStore,
@@ -526,6 +524,7 @@ func TestMaxProposalBlockSize(t *testing.T) {
 		math.MaxInt64,
 		state, commit,
 		proposerAddr,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -547,7 +546,7 @@ func TestMaxProposalBlockSize(t *testing.T) {
 }
 
 func TestNodeNewSeedNode(t *testing.T) {
-	cfg, err := config.ResetTestRoot("node_new_node_custom_reactors_test")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_new_node_custom_reactors_test")
 	require.NoError(t, err)
 	cfg.Mode = config.ModeSeed
 	defer os.RemoveAll(cfg.RootDir)
@@ -568,6 +567,7 @@ func TestNodeNewSeedNode(t *testing.T) {
 		logger,
 	)
 	t.Cleanup(ns.Wait)
+	t.Cleanup(leaktest.CheckTimeout(t, time.Second))
 
 	require.NoError(t, err)
 	n, ok := ns.(*seedNodeImpl)
@@ -584,7 +584,7 @@ func TestNodeNewSeedNode(t *testing.T) {
 }
 
 func TestNodeSetEventSink(t *testing.T) {
-	cfg, err := config.ResetTestRoot("node_app_version_test")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "node_app_version_test")
 	require.NoError(t, err)
 
 	defer os.RemoveAll(cfg.RootDir)
@@ -724,7 +724,7 @@ func loadStatefromGenesis(ctx context.Context, t *testing.T) sm.State {
 
 	stateDB := dbm.NewMemDB()
 	stateStore := sm.NewStore(stateDB)
-	cfg, err := config.ResetTestRoot("load_state_from_genesis")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "load_state_from_genesis")
 	require.NoError(t, err)
 
 	loadedState, err := stateStore.Load()

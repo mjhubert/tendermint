@@ -12,6 +12,7 @@ import (
 
 	abciclient "github.com/tendermint/tendermint/abci/client"
 	abci "github.com/tendermint/tendermint/abci/types"
+	abcimocks "github.com/tendermint/tendermint/abci/types/mocks"
 	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/crypto/ed25519"
 	"github.com/tendermint/tendermint/crypto/encoding"
@@ -26,7 +27,6 @@ import (
 	"github.com/tendermint/tendermint/internal/store"
 	"github.com/tendermint/tendermint/internal/test/factory"
 	"github.com/tendermint/tendermint/libs/log"
-	tmtime "github.com/tendermint/tendermint/libs/time"
 	"github.com/tendermint/tendermint/types"
 	"github.com/tendermint/tendermint/version"
 )
@@ -38,9 +38,9 @@ var (
 
 func TestApplyBlock(t *testing.T) {
 	app := &testApp{}
-	cc := abciclient.NewLocalCreator(app)
 	logger := log.TestingLogger()
-	proxyApp := proxy.NewAppConns(cc, logger, proxy.NopMetrics())
+	cc := abciclient.NewLocalClient(logger, app)
+	proxyApp := proxy.New(cc, logger, proxy.NopMetrics())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -51,7 +51,7 @@ func TestApplyBlock(t *testing.T) {
 	state, stateDB, _ := makeState(t, 1, 1)
 	stateStore := sm.NewStore(stateDB)
 	blockStore := store.NewBlockStore(dbm.NewMemDB())
-	blockExec := sm.NewBlockExecutor(stateStore, logger, proxyApp.Consensus(),
+	blockExec := sm.NewBlockExecutor(stateStore, logger, proxyApp,
 		mmock.Mempool{}, sm.EmptyEvidencePool{}, blockStore)
 
 	block, err := sf.MakeBlock(state, 1, new(types.Commit))
@@ -67,85 +67,78 @@ func TestApplyBlock(t *testing.T) {
 	assert.EqualValues(t, 1, state.Version.Consensus.App, "App version wasn't updated")
 }
 
-// TestBeginBlockValidators ensures we send absent validators list.
-func TestBeginBlockValidators(t *testing.T) {
+// TestFinalizeBlockDecidedLastCommit ensures we correctly send the DecidedLastCommit to the
+// application. The test ensures that the DecidedLastCommit properly reflects
+// which validators signed the preceding block.
+func TestFinalizeBlockDecidedLastCommit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	logger := log.TestingLogger()
 	app := &testApp{}
-	cc := abciclient.NewLocalCreator(app)
-	proxyApp := proxy.NewAppConns(cc, log.TestingLogger(), proxy.NopMetrics())
+	cc := abciclient.NewLocalClient(logger, app)
+	appClient := proxy.New(cc, logger, proxy.NopMetrics())
 
-	err := proxyApp.Start(ctx)
+	err := appClient.Start(ctx)
 	require.NoError(t, err)
 
-	state, stateDB, _ := makeState(t, 2, 2)
+	state, stateDB, privVals := makeState(t, 7, 1)
 	stateStore := sm.NewStore(stateDB)
-
-	prevHash := state.LastBlockID.Hash
-	prevParts := types.PartSetHeader{}
-	prevBlockID := types.BlockID{Hash: prevHash, PartSetHeader: prevParts}
-
-	var (
-		now        = tmtime.Now()
-		commitSig0 = types.NewCommitSigForBlock(
-			[]byte("Signature1"),
-			state.Validators.Validators[0].Address,
-			now,
-			types.VoteExtensionToSign{},
-		)
-		commitSig1 = types.NewCommitSigForBlock(
-			[]byte("Signature2"),
-			state.Validators.Validators[1].Address,
-			now,
-			types.VoteExtensionToSign{},
-		)
-		absentSig = types.NewCommitSigAbsent()
-	)
+	absentSig := types.NewCommitSigAbsent()
 
 	testCases := []struct {
-		desc                     string
-		lastCommitSigs           []types.CommitSig
-		expectedAbsentValidators []int
+		name             string
+		absentCommitSigs map[int]bool
 	}{
-		{"none absent", []types.CommitSig{commitSig0, commitSig1}, []int{}},
-		{"one absent", []types.CommitSig{commitSig0, absentSig}, []int{1}},
-		{"multiple absent", []types.CommitSig{absentSig, absentSig}, []int{0, 1}},
+		{"none absent", map[int]bool{}},
+		{"one absent", map[int]bool{1: true}},
+		{"multiple absent", map[int]bool{1: true, 3: true}},
 	}
 
 	for _, tc := range testCases {
-		lastCommit := types.NewCommit(1, 0, prevBlockID, tc.lastCommitSigs)
+		t.Run(tc.name, func(t *testing.T) {
+			blockStore := store.NewBlockStore(dbm.NewMemDB())
+			evpool := &mocks.EvidencePool{}
+			evpool.On("PendingEvidence", mock.Anything).Return([]types.Evidence{}, 0)
+			evpool.On("Update", ctx, mock.Anything, mock.Anything).Return()
+			evpool.On("CheckEvidence", ctx, mock.Anything).Return(nil)
 
-		// block for height 2
-		block, err := sf.MakeBlock(state, 2, lastCommit)
-		require.NoError(t, err)
+			blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), appClient, mmock.Mempool{}, evpool, blockStore)
+			state, _, lastCommit := makeAndCommitGoodBlock(ctx, t, state, 1, new(types.Commit), state.NextValidators.Validators[0].Address, blockExec, privVals, nil)
 
-		_, err = sm.ExecCommitBlock(ctx, nil, proxyApp.Consensus(), block, log.TestingLogger(), stateStore, 1, state)
-		require.NoError(t, err, tc.desc)
-
-		// -> app receives a list of validators with a bool indicating if they signed
-		ctr := 0
-		for i, v := range app.CommitVotes {
-			if ctr < len(tc.expectedAbsentValidators) &&
-				tc.expectedAbsentValidators[ctr] == i {
-
-				assert.False(t, v.SignedLastBlock)
-				ctr++
-			} else {
-				assert.True(t, v.SignedLastBlock)
+			for idx, isAbsent := range tc.absentCommitSigs {
+				if isAbsent {
+					lastCommit.Signatures[idx] = absentSig
+				}
 			}
-		}
+
+			// block for height 2
+			block, err := sf.MakeBlock(state, 2, lastCommit)
+			require.NoError(t, err)
+			bps, err := block.MakePartSet(testPartSize)
+			require.NoError(t, err)
+			blockID := types.BlockID{Hash: block.Hash(), PartSetHeader: bps.Header()}
+			_, err = blockExec.ApplyBlock(ctx, state, blockID, block)
+			require.NoError(t, err)
+
+			// -> app receives a list of validators with a bool indicating if they signed
+			for i, v := range app.CommitVotes {
+				_, absent := tc.absentCommitSigs[i]
+				assert.Equal(t, !absent, v.SignedLastBlock)
+			}
+		})
 	}
 }
 
-// TestBeginBlockByzantineValidators ensures we send byzantine validators list.
-func TestBeginBlockByzantineValidators(t *testing.T) {
+// TestFinalizeBlockByzantineValidators ensures we send byzantine validators list.
+func TestFinalizeBlockByzantineValidators(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	app := &testApp{}
-	cc := abciclient.NewLocalCreator(app)
-	proxyApp := proxy.NewAppConns(cc, log.TestingLogger(), proxy.NopMetrics())
+	logger := log.TestingLogger()
+	cc := abciclient.NewLocalClient(logger, app)
+	proxyApp := proxy.New(cc, logger, proxy.NopMetrics())
 	err := proxyApp.Start(ctx)
 	require.NoError(t, err)
 
@@ -216,12 +209,12 @@ func TestBeginBlockByzantineValidators(t *testing.T) {
 
 	evpool := &mocks.EvidencePool{}
 	evpool.On("PendingEvidence", mock.AnythingOfType("int64")).Return(ev, int64(100))
-	evpool.On("Update", mock.AnythingOfType("state.State"), mock.AnythingOfType("types.EvidenceList")).Return()
-	evpool.On("CheckEvidence", mock.AnythingOfType("types.EvidenceList")).Return(nil)
+	evpool.On("Update", ctx, mock.AnythingOfType("state.State"), mock.AnythingOfType("types.EvidenceList")).Return()
+	evpool.On("CheckEvidence", ctx, mock.AnythingOfType("types.EvidenceList")).Return(nil)
 
 	blockStore := store.NewBlockStore(dbm.NewMemDB())
 
-	blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyApp.Consensus(),
+	blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyApp,
 		mmock.Mempool{}, evpool, blockStore)
 
 	block, err := sf.MakeBlock(state, 1, new(types.Commit))
@@ -241,44 +234,77 @@ func TestBeginBlockByzantineValidators(t *testing.T) {
 }
 
 func TestProcessProposal(t *testing.T) {
-	height := 1
-	runTest := func(txs types.Txs, expectAccept bool) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	const height = 2
+	txs := factory.MakeTenTxs(height)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-		app := &testApp{}
-		cc := abciclient.NewLocalCreator(app)
-		logger := log.TestingLogger()
-		proxyApp := proxy.NewAppConns(cc, logger, proxy.NopMetrics())
-		err := proxyApp.Start(ctx)
+	app := abcimocks.NewBaseMock()
+	logger := log.TestingLogger()
+	cc := abciclient.NewLocalClient(logger, app)
+	proxyApp := proxy.New(cc, logger, proxy.NopMetrics())
+	err := proxyApp.Start(ctx)
+	require.NoError(t, err)
+
+	state, stateDB, privVals := makeState(t, 1, height)
+	stateStore := sm.NewStore(stateDB)
+	blockStore := store.NewBlockStore(dbm.NewMemDB())
+
+	blockExec := sm.NewBlockExecutor(
+		stateStore,
+		logger,
+		proxyApp,
+		mmock.Mempool{},
+		sm.EmptyEvidencePool{},
+		blockStore,
+	)
+
+	block0, err := sf.MakeBlock(state, height-1, new(types.Commit))
+	require.NoError(t, err)
+	lastCommitSig := []types.CommitSig{}
+	partSet, err := block0.MakePartSet(types.BlockPartSizeBytes)
+	require.NoError(t, err)
+	blockID := types.BlockID{Hash: block0.Hash(), PartSetHeader: partSet.Header()}
+	voteInfos := []abci.VoteInfo{}
+	for _, privVal := range privVals {
+		vote, err := factory.MakeVote(ctx, privVal, block0.Header.ChainID, 0, 0, 0, 2, blockID, time.Now())
 		require.NoError(t, err)
-
-		state, stateDB, _ := makeState(t, 1, height)
-		stateStore := sm.NewStore(stateDB)
-		blockStore := store.NewBlockStore(dbm.NewMemDB())
-
-		blockExec := sm.NewBlockExecutor(
-			stateStore,
-			logger,
-			proxyApp.Consensus(),
-			mmock.Mempool{},
-			sm.EmptyEvidencePool{},
-			blockStore,
-		)
-
-		block, err := sf.MakeBlock(state, int64(height), new(types.Commit))
+		pk, err := privVal.GetPubKey(ctx)
 		require.NoError(t, err)
-		block.Txs = txs
-		acceptBlock, err := blockExec.ProcessProposal(ctx, block)
-		require.NoError(t, err)
-		require.Equal(t, expectAccept, acceptBlock)
+		addr := pk.Address()
+		voteInfos = append(voteInfos,
+			abci.VoteInfo{
+				SignedLastBlock: true,
+				Validator: abci.Validator{
+					Address: addr,
+					Power:   1000,
+				},
+			})
+		lastCommitSig = append(lastCommitSig, vote.CommitSig())
 	}
-	goodTxs := factory.MakeTenTxs(int64(height))
-	runTest(goodTxs, true)
-	// testApp has process proposal fail if any tx is 0-len
-	badTxs := factory.MakeTenTxs(int64(height))
-	badTxs[0] = types.Tx{}
-	runTest(badTxs, false)
+
+	lastCommit := types.NewCommit(height-1, 0, types.BlockID{}, lastCommitSig)
+	block1, err := sf.MakeBlock(state, height, lastCommit)
+	require.NoError(t, err)
+	block1.Txs = txs
+
+	expectedRpp := abci.RequestProcessProposal{
+		Hash:                block1.Hash(),
+		Header:              *block1.Header.ToProto(),
+		Txs:                 block1.Txs.ToSliceOfBytes(),
+		ByzantineValidators: block1.Evidence.ToABCI(),
+		ProposedLastCommit: abci.CommitInfo{
+			Round: 0,
+			Votes: voteInfos,
+		},
+	}
+
+	app.On("ProcessProposal", mock.Anything).Return(abci.ResponseProcessProposal{Accept: true})
+	acceptBlock, err := blockExec.ProcessProposal(ctx, block1, state)
+	require.NoError(t, err)
+	require.True(t, acceptBlock)
+	app.AssertExpectations(t)
+	app.AssertCalled(t, "ProcessProposal", expectedRpp)
 }
 
 func TestValidateValidatorUpdates(t *testing.T) {
@@ -411,15 +437,15 @@ func TestUpdateValidators(t *testing.T) {
 	}
 }
 
-// TestEndBlockValidatorUpdates ensures we update validator set and send an event.
-func TestEndBlockValidatorUpdates(t *testing.T) {
+// TestFinalizeBlockValidatorUpdates ensures we update validator set and send an event.
+func TestFinalizeBlockValidatorUpdates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	app := &testApp{}
-	cc := abciclient.NewLocalCreator(app)
 	logger := log.TestingLogger()
-	proxyApp := proxy.NewAppConns(cc, logger, proxy.NopMetrics())
+	cc := abciclient.NewLocalClient(logger, app)
+	proxyApp := proxy.New(cc, logger, proxy.NopMetrics())
 	err := proxyApp.Start(ctx)
 	require.NoError(t, err)
 
@@ -430,7 +456,7 @@ func TestEndBlockValidatorUpdates(t *testing.T) {
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
 		logger,
-		proxyApp.Consensus(),
+		proxyApp,
 		mmock.Mempool{},
 		sm.EmptyEvidencePool{},
 		blockStore,
@@ -439,12 +465,12 @@ func TestEndBlockValidatorUpdates(t *testing.T) {
 	eventBus := eventbus.NewDefault(logger)
 	err = eventBus.Start(ctx)
 	require.NoError(t, err)
-	defer eventBus.Stop() //nolint:errcheck // ignore for tests
+	defer eventBus.Stop()
 
 	blockExec.SetEventBus(eventBus)
 
 	updatesSub, err := eventBus.SubscribeWithArgs(ctx, pubsub.SubscribeArgs{
-		ClientID: "TestEndBlockValidatorUpdates",
+		ClientID: "TestFinalizeBlockValidatorUpdates",
 		Query:    types.EventQueryValidatorSetUpdates,
 	})
 	require.NoError(t, err)
@@ -485,16 +511,16 @@ func TestEndBlockValidatorUpdates(t *testing.T) {
 	}
 }
 
-// TestEndBlockValidatorUpdatesResultingInEmptySet checks that processing validator updates that
+// TestFinalizeBlockValidatorUpdatesResultingInEmptySet checks that processing validator updates that
 // would result in empty set causes no panic, an error is raised and NextValidators is not updated
-func TestEndBlockValidatorUpdatesResultingInEmptySet(t *testing.T) {
+func TestFinalizeBlockValidatorUpdatesResultingInEmptySet(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	app := &testApp{}
-	cc := abciclient.NewLocalCreator(app)
 	logger := log.TestingLogger()
-	proxyApp := proxy.NewAppConns(cc, logger, proxy.NopMetrics())
+	cc := abciclient.NewLocalClient(logger, app)
+	proxyApp := proxy.New(cc, logger, proxy.NopMetrics())
 	err := proxyApp.Start(ctx)
 	require.NoError(t, err)
 
@@ -504,7 +530,7 @@ func TestEndBlockValidatorUpdatesResultingInEmptySet(t *testing.T) {
 	blockExec := sm.NewBlockExecutor(
 		stateStore,
 		log.TestingLogger(),
-		proxyApp.Consensus(),
+		proxyApp,
 		mmock.Mempool{},
 		sm.EmptyEvidencePool{},
 		blockStore,

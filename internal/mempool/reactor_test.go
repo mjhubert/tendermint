@@ -12,6 +12,7 @@ import (
 
 	"github.com/fortytw2/leaktest"
 	"github.com/stretchr/testify/require"
+
 	"github.com/tendermint/tendermint/abci/example/kvstore"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/config"
@@ -41,7 +42,7 @@ type reactorTestSuite struct {
 func setupReactors(ctx context.Context, t *testing.T, numNodes int, chBuf uint) *reactorTestSuite {
 	t.Helper()
 
-	cfg, err := config.ResetTestRoot(strings.ReplaceAll(t.Name(), "/", "|"))
+	cfg, err := config.ResetTestRoot(t.TempDir(), strings.ReplaceAll(t.Name(), "/", "|"))
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(cfg.RootDir) })
 
@@ -95,7 +96,7 @@ func setupReactors(ctx context.Context, t *testing.T, numNodes int, chBuf uint) 
 	t.Cleanup(func() {
 		for nodeID := range rts.reactors {
 			if rts.reactors[nodeID].IsRunning() {
-				require.NoError(t, rts.reactors[nodeID].Stop())
+				rts.reactors[nodeID].Stop()
 				rts.reactors[nodeID].Wait()
 				require.False(t, rts.reactors[nodeID].IsRunning())
 			}
@@ -183,8 +184,7 @@ func TestReactorBroadcastDoesNotPanic(t *testing.T) {
 		}()
 	}
 
-	err := primaryReactor.Stop()
-	require.NoError(t, err)
+	primaryReactor.Stop()
 	wg.Wait()
 }
 
@@ -242,9 +242,9 @@ func TestReactorConcurrency(t *testing.T) {
 			mempool.Lock()
 			defer mempool.Unlock()
 
-			deliverTxResponses := make([]*abci.ResponseDeliverTx, len(txs))
+			deliverTxResponses := make([]*abci.ExecTxResult, len(txs))
 			for i := range txs {
-				deliverTxResponses[i] = &abci.ResponseDeliverTx{Code: 0}
+				deliverTxResponses[i] = &abci.ExecTxResult{Code: 0}
 			}
 
 			require.NoError(t, mempool.Update(ctx, 1, convertTex(txs), deliverTxResponses, nil, nil))
@@ -261,7 +261,7 @@ func TestReactorConcurrency(t *testing.T) {
 			mempool.Lock()
 			defer mempool.Unlock()
 
-			err := mempool.Update(ctx, 1, []types.Tx{}, make([]*abci.ResponseDeliverTx, 0), nil, nil)
+			err := mempool.Update(ctx, 1, []types.Tx{}, make([]*abci.ExecTxResult, 0), nil, nil)
 			require.NoError(t, err)
 		}()
 	}

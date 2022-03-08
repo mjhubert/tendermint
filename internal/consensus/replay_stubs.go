@@ -22,7 +22,7 @@ var _ mempool.Mempool = emptyMempool{}
 func (emptyMempool) Lock()     {}
 func (emptyMempool) Unlock()   {}
 func (emptyMempool) Size() int { return 0 }
-func (emptyMempool) CheckTx(_ context.Context, _ types.Tx, _ func(*abci.Response), _ mempool.TxInfo) error {
+func (emptyMempool) CheckTx(context.Context, types.Tx, func(*abci.ResponseCheckTx), mempool.TxInfo) error {
 	return nil
 }
 func (emptyMempool) RemoveTxByKey(txKey types.TxKey) error   { return nil }
@@ -32,7 +32,7 @@ func (emptyMempool) Update(
 	_ context.Context,
 	_ int64,
 	_ types.Txs,
-	_ []*abci.ResponseDeliverTx,
+	_ []*abci.ExecTxResult,
 	_ mempool.PreCheckFunc,
 	_ mempool.PostCheckFunc,
 ) error {
@@ -61,22 +61,11 @@ func newMockProxyApp(
 	logger log.Logger,
 	appHash []byte,
 	abciResponses *tmstate.ABCIResponses,
-) (proxy.AppConnConsensus, error) {
-
-	clientCreator := abciclient.NewLocalCreator(&mockProxyApp{
+) (abciclient.Client, error) {
+	return proxy.New(abciclient.NewLocalClient(logger, &mockProxyApp{
 		appHash:       appHash,
 		abciResponses: abciResponses,
-	})
-	cli, err := clientCreator(logger)
-	if err != nil {
-		return nil, err
-	}
-
-	if err = cli.Start(ctx); err != nil {
-		return nil, err
-	}
-
-	return proxy.NewAppConnConsensus(cli, proxy.NopMetrics()), nil
+	}), logger, proxy.NopMetrics()), nil
 }
 
 type mockProxyApp struct {
@@ -87,18 +76,13 @@ type mockProxyApp struct {
 	abciResponses *tmstate.ABCIResponses
 }
 
-func (mock *mockProxyApp) DeliverTx(req abci.RequestDeliverTx) abci.ResponseDeliverTx {
-	r := mock.abciResponses.DeliverTxs[mock.txCount]
+func (mock *mockProxyApp) FinalizeBlock(req abci.RequestFinalizeBlock) abci.ResponseFinalizeBlock {
+	r := mock.abciResponses.FinalizeBlock
 	mock.txCount++
 	if r == nil {
-		return abci.ResponseDeliverTx{}
+		return abci.ResponseFinalizeBlock{}
 	}
 	return *r
-}
-
-func (mock *mockProxyApp) EndBlock(req abci.RequestEndBlock) abci.ResponseEndBlock {
-	mock.txCount = 0
-	return *mock.abciResponses.EndBlock
 }
 
 func (mock *mockProxyApp) Commit() abci.ResponseCommit {

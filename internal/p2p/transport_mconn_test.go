@@ -33,9 +33,7 @@ func init() {
 		})
 		require.NoError(t, err)
 
-		t.Cleanup(func() {
-			require.NoError(t, transport.Close())
-		})
+		t.Cleanup(func() { _ = transport.Close() })
 
 		return transport
 	}
@@ -155,9 +153,6 @@ func TestMConnTransport_Listen(t *testing.T) {
 		tc := tc
 		t.Run(tc.endpoint.String(), func(t *testing.T) {
 			t.Cleanup(leaktest.Check(t))
-
-			ctx, cancel = context.WithCancel(ctx)
-			defer cancel()
 
 			transport := p2p.NewMConnTransport(
 				log.TestingLogger(),

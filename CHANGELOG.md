@@ -2,6 +2,27 @@
 
 Friendly reminder: We have a [bug bounty program](https://hackerone.com/cosmos).
 
+## v0.35.2
+
+February 28, 2022
+
+Special thanks to external contributors on this release: @ashcherbakov, @yihuang, @waelsy123
+
+### IMPROVEMENTS
+
+- [consensus] [\#7875](https://github.com/tendermint/tendermint/pull/7875) additional timing metrics. (@williambanfield)
+
+### BUG FIXES
+
+- [abci] [\#7990](https://github.com/tendermint/tendermint/pull/7990) revert buffer limit change. (@williambanfield)
+- [cli] [#7837](https://github.com/tendermint/tendermint/pull/7837) fix app hash in state rollback. (@yihuang)
+- [cli] [\#7869](https://github.com/tendermint/tendermint/pull/7869) Update unsafe-reset-all command to match release v35. (waelsy123)
+- [light] [\#7640](https://github.com/tendermint/tendermint/pull/7640) Light Client: fix absence proof verification (@ashcherbakov)
+- [light] [\#7641](https://github.com/tendermint/tendermint/pull/7641) Light Client: fix querying against the latest height (@ashcherbakov)
+- [mempool] [\#7718](https://github.com/tendermint/tendermint/pull/7718) return duplicate tx errors more consistently. (@tychoish)
+- [rpc] [\#7744](https://github.com/tendermint/tendermint/pull/7744) fix layout of endpoint list. (@creachadair)
+- [statesync] [\#7886](https://github.com/tendermint/tendermint/pull/7886) assert app version matches. (@cmwaters)
+
 ## v0.35.1
 
 January 26, 2022
@@ -208,6 +229,18 @@ Special thanks to external contributors on this release: @JayT106,
 - [rpc] [\#6615](https://github.com/tendermint/tendermint/pull/6615) Add TotalGasUsed to block_results response (@crypto-facs)
 - [cmd/tendermint/commands] [\#6623](https://github.com/tendermint/tendermint/pull/6623) replace `$HOME/.some/test/dir` with `t.TempDir` (@tanyabouman)
 - [statesync] \6807 Implement P2P state provider as an alternative to RPC (@cmwaters)
+
+## v0.34.16
+
+Special thanks to external contributors on this release: @yihuang
+
+### BUG FIXES
+
+- [consensus] [\#7617](https://github.com/tendermint/tendermint/issues/7617) calculate prevote message delay metric (backport #7551) (@williambanfield).
+- [consensus] [\#7631](https://github.com/tendermint/tendermint/issues/7631) check proposal non-nil in prevote message delay metric (backport #7625) (@williambanfield).
+- [statesync] [\#7885](https://github.com/tendermint/tendermint/issues/7885) statesync: assert app version matches (backport #7856) (@cmwaters).
+- [statesync] [\#7881](https://github.com/tendermint/tendermint/issues/7881) fix app hash in state rollback (backport #7837) (@cmwaters).
+- [cli] [#7837](https://github.com/tendermint/tendermint/pull/7837) fix app hash in state rollback. (@yihuang).
 
 ## v0.34.15
 
@@ -980,7 +1013,7 @@ and a validator address plus a timestamp. Note we may remove the validator
 address & timestamp fields in the future (see ADR-25).
 
 `lite2` package has been added to solve `lite` issues and introduce weak
-subjectivity interface. Refer to the [spec](https://github.com/tendermint/spec/blob/master/spec/consensus/light-client.md) for complete details.
+subjectivity interface. Refer to the [spec](./spec/consensus/light-client/) for complete details.
 `lite` package is now deprecated and will be removed in v0.34 release.
 
 ### BREAKING CHANGES:

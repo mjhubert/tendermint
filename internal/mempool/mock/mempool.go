@@ -17,7 +17,7 @@ var _ Mempool = Mempool{}
 func (Mempool) Lock()     {}
 func (Mempool) Unlock()   {}
 func (Mempool) Size() int { return 0 }
-func (Mempool) CheckTx(_ context.Context, _ types.Tx, _ func(*abci.Response), _ mempool.TxInfo) error {
+func (Mempool) CheckTx(context.Context, types.Tx, func(*abci.ResponseCheckTx), mempool.TxInfo) error {
 	return nil
 }
 func (Mempool) RemoveTxByKey(txKey types.TxKey) error   { return nil }
@@ -27,7 +27,7 @@ func (Mempool) Update(
 	_ context.Context,
 	_ int64,
 	_ types.Txs,
-	_ []*abci.ResponseDeliverTx,
+	_ []*abci.ExecTxResult,
 	_ mempool.PreCheckFunc,
 	_ mempool.PostCheckFunc,
 ) error {

@@ -34,19 +34,18 @@ func (env *Environment) BroadcastTxAsync(ctx context.Context, tx types.Tx) (*cor
 // DeliverTx result.
 // More: https://docs.tendermint.com/master/rpc/#/Tx/broadcast_tx_sync
 func (env *Environment) BroadcastTxSync(ctx context.Context, tx types.Tx) (*coretypes.ResultBroadcastTx, error) {
-	resCh := make(chan *abci.Response, 1)
+	resCh := make(chan *abci.ResponseCheckTx, 1)
 	err := env.Mempool.CheckTx(
 		ctx,
 		tx,
-		func(res *abci.Response) { resCh <- res },
+		func(res *abci.ResponseCheckTx) { resCh <- res },
 		mempool.TxInfo{},
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	res := <-resCh
-	r := res.GetCheckTx()
+	r := <-resCh
 
 	return &coretypes.ResultBroadcastTx{
 		Code:         r.Code,
@@ -61,18 +60,18 @@ func (env *Environment) BroadcastTxSync(ctx context.Context, tx types.Tx) (*core
 // BroadcastTxCommit returns with the responses from CheckTx and DeliverTx.
 // More: https://docs.tendermint.com/master/rpc/#/Tx/broadcast_tx_commit
 func (env *Environment) BroadcastTxCommit(ctx context.Context, tx types.Tx) (*coretypes.ResultBroadcastTxCommit, error) {
-	resCh := make(chan *abci.Response, 1)
+	resCh := make(chan *abci.ResponseCheckTx, 1)
 	err := env.Mempool.CheckTx(
 		ctx,
 		tx,
-		func(res *abci.Response) { resCh <- res },
+		func(res *abci.ResponseCheckTx) { resCh <- res },
 		mempool.TxInfo{},
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	r := (<-resCh).GetCheckTx()
+	r := <-resCh
 	if r.Code != abci.CodeTypeOK {
 		return &coretypes.ResultBroadcastTxCommit{
 			CheckTx: *r,
@@ -115,10 +114,10 @@ func (env *Environment) BroadcastTxCommit(ctx context.Context, tx types.Tx) (*co
 			}
 
 			return &coretypes.ResultBroadcastTxCommit{
-				CheckTx:   *r,
-				DeliverTx: txres.TxResult,
-				Hash:      tx.Hash(),
-				Height:    txres.Height,
+				CheckTx:  *r,
+				TxResult: txres.TxResult,
+				Hash:     tx.Hash(),
+				Height:   txres.Height,
 			}, nil
 		}
 	}
@@ -159,7 +158,7 @@ func (env *Environment) NumUnconfirmedTxs(ctx context.Context) (*coretypes.Resul
 // be added to the mempool either.
 // More: https://docs.tendermint.com/master/rpc/#/Tx/check_tx
 func (env *Environment) CheckTx(ctx context.Context, tx types.Tx) (*coretypes.ResultCheckTx, error) {
-	res, err := env.ProxyAppMempool.CheckTx(ctx, abci.RequestCheckTx{Tx: tx})
+	res, err := env.ProxyApp.CheckTx(ctx, abci.RequestCheckTx{Tx: tx})
 	if err != nil {
 		return nil, err
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -50,23 +49,23 @@ type cleanupFunc func()
 func configSetup(t *testing.T) *config.Config {
 	t.Helper()
 
-	cfg, err := ResetConfig("consensus_reactor_test")
+	cfg, err := ResetConfig(t.TempDir(), "consensus_reactor_test")
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(cfg.RootDir) })
 
-	consensusReplayConfig, err := ResetConfig("consensus_replay_test")
+	consensusReplayConfig, err := ResetConfig(t.TempDir(), "consensus_replay_test")
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(consensusReplayConfig.RootDir) })
 
-	configStateTest, err := ResetConfig("consensus_state_test")
+	configStateTest, err := ResetConfig(t.TempDir(), "consensus_state_test")
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(configStateTest.RootDir) })
 
-	configMempoolTest, err := ResetConfig("consensus_mempool_test")
+	configMempoolTest, err := ResetConfig(t.TempDir(), "consensus_mempool_test")
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(configMempoolTest.RootDir) })
 
-	configByzantineTest, err := ResetConfig("consensus_byzantine_test")
+	configByzantineTest, err := ResetConfig(t.TempDir(), "consensus_byzantine_test")
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(configByzantineTest.RootDir) })
 
@@ -78,8 +77,8 @@ func ensureDir(t *testing.T, dir string, mode os.FileMode) {
 	require.NoError(t, tmos.EnsureDir(dir, mode))
 }
 
-func ResetConfig(name string) (*config.Config, error) {
-	return config.ResetTestRoot(name)
+func ResetConfig(dir, name string) (*config.Config, error) {
+	return config.ResetTestRoot(dir, name)
 }
 
 //-------------------------------------------------------------------------------
@@ -371,7 +370,11 @@ func subscribeToVoter(ctx context.Context, t *testing.T, cs *State, addr []byte)
 		vote := msg.Data().(types.EventDataVote)
 		// we only fire for our own votes
 		if bytes.Equal(addr, vote.Vote.ValidatorAddress) {
-			ch <- msg
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case ch <- msg:
+			}
 		}
 		return nil
 	}, types.EventQueryVote); err != nil {
@@ -402,7 +405,10 @@ func subscribeToVoterBuffered(ctx context.Context, t *testing.T, cs *State, addr
 			vote := msg.Data().(types.EventDataVote)
 			// we only fire for our own votes
 			if bytes.Equal(addr, vote.Vote.ValidatorAddress) {
-				ch <- msg
+				select {
+				case <-ctx.Done():
+				case ch <- msg:
+				}
 			}
 		}
 	}()
@@ -422,7 +428,7 @@ func newState(
 ) *State {
 	t.Helper()
 
-	cfg, err := config.ResetTestRoot("consensus_state_test")
+	cfg, err := config.ResetTestRoot(t.TempDir(), "consensus_state_test")
 	require.NoError(t, err)
 
 	return newStateWithConfig(ctx, t, logger, cfg, state, pv, app)
@@ -454,9 +460,8 @@ func newStateWithConfigAndBlockStore(
 	t.Helper()
 
 	// one for mempool, one for consensus
-	mtx := new(sync.Mutex)
-	proxyAppConnMem := abciclient.NewLocalClient(logger, mtx, app)
-	proxyAppConnCon := abciclient.NewLocalClient(logger, mtx, app)
+	proxyAppConnMem := abciclient.NewLocalClient(logger, app)
+	proxyAppConnCon := abciclient.NewLocalClient(logger, app)
 
 	// Make Mempool
 
@@ -464,7 +469,6 @@ func newStateWithConfigAndBlockStore(
 		logger.With("module", "mempool"),
 		thisConfig.Mempool,
 		proxyAppConnMem,
-		0,
 	)
 
 	if thisConfig.Consensus.WaitForTxs() {
@@ -479,15 +483,19 @@ func newStateWithConfigAndBlockStore(
 	require.NoError(t, stateStore.Save(state))
 
 	blockExec := sm.NewBlockExecutor(stateStore, logger, proxyAppConnCon, mempool, evpool, blockStore)
-	cs := NewState(ctx,
+	cs, err := NewState(ctx,
 		logger.With("module", "consensus"),
 		thisConfig.Consensus,
-		state,
+		stateStore,
 		blockExec,
 		blockStore,
 		mempool,
 		evpool,
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	cs.SetPrivValidator(ctx, pv)
 
 	eventBus := eventbus.NewDefault(logger.With("module", "events"))
@@ -508,18 +516,41 @@ func loadPrivValidator(t *testing.T, cfg *config.Config) *privval.FilePV {
 	return privValidator
 }
 
-func makeState(ctx context.Context, t *testing.T, cfg *config.Config, logger log.Logger, nValidators int) (*State, []*validatorStub) {
+type makeStateArgs struct {
+	config      *config.Config
+	logger      log.Logger
+	validators  int
+	application abci.Application
+}
+
+func makeState(ctx context.Context, t *testing.T, args makeStateArgs) (*State, []*validatorStub) {
 	t.Helper()
 	// Get State
-	state, privVals := makeGenesisState(ctx, t, cfg, genesisStateArgs{
-		Validators: nValidators,
+	validators := 4
+	if args.validators != 0 {
+		validators = args.validators
+	}
+	var app abci.Application
+	app = kvstore.NewApplication()
+	if args.application != nil {
+		app = args.application
+	}
+	if args.config == nil {
+		args.config = configSetup(t)
+	}
+	if args.logger == nil {
+		args.logger = log.NewNopLogger()
+	}
+
+	state, privVals := makeGenesisState(ctx, t, args.config, genesisStateArgs{
+		Validators: validators,
 	})
 
-	vss := make([]*validatorStub, nValidators)
+	vss := make([]*validatorStub, validators)
 
-	cs := newState(ctx, t, logger, state, privVals[0], kvstore.NewApplication())
+	cs := newState(ctx, t, args.logger, state, privVals[0], app)
 
-	for i := 0; i < nValidators; i++ {
+	for i := 0; i < validators; i++ {
 		vss[i] = newValidatorStub(privVals[i], int32(i))
 	}
 	// since cs1 starts at 1
@@ -751,7 +782,6 @@ func makeConsensusState(
 	nValidators int,
 	testName string,
 	tickerFunc func() TimeoutTicker,
-	appFunc func(t *testing.T, logger log.Logger) abci.Application,
 	configOpts ...func(*config.Config),
 ) ([]*State, cleanupFunc) {
 	t.Helper()
@@ -769,7 +799,7 @@ func makeConsensusState(
 		blockStore := store.NewBlockStore(dbm.NewMemDB()) // each state needs its own db
 		state, err := sm.MakeGenesisState(genDoc)
 		require.NoError(t, err)
-		thisConfig, err := ResetConfig(fmt.Sprintf("%s_%d", testName, i))
+		thisConfig, err := ResetConfig(t.TempDir(), fmt.Sprintf("%s_%d", testName, i))
 		require.NoError(t, err)
 
 		configRootDirs = append(configRootDirs, thisConfig.RootDir)
@@ -780,11 +810,8 @@ func makeConsensusState(
 
 		ensureDir(t, filepath.Dir(thisConfig.Consensus.WalFile()), 0700) // dir for wal
 
-		app := appFunc(t, logger)
-
-		if appCloser, ok := app.(io.Closer); ok {
-			closeFuncs = append(closeFuncs, appCloser.Close)
-		}
+		app := kvstore.NewApplication()
+		closeFuncs = append(closeFuncs, app.Close)
 
 		vals := types.TM2PB.ValidatorUpdates(state.Validators)
 		app.InitChain(abci.RequestInitChain{Validators: vals})
@@ -827,7 +854,7 @@ func randConsensusNetWithPeers(
 	configRootDirs := make([]string, 0, nPeers)
 	for i := 0; i < nPeers; i++ {
 		state, _ := sm.MakeGenesisState(genDoc)
-		thisConfig, err := ResetConfig(fmt.Sprintf("%s_%d", testName, i))
+		thisConfig, err := ResetConfig(t.TempDir(), fmt.Sprintf("%s_%d", testName, i))
 		require.NoError(t, err)
 
 		configRootDirs = append(configRootDirs, thisConfig.RootDir)
@@ -839,10 +866,10 @@ func randConsensusNetWithPeers(
 		if i < nValidators {
 			privVal = privVals[i]
 		} else {
-			tempKeyFile, err := os.CreateTemp("", "priv_validator_key_")
+			tempKeyFile, err := os.CreateTemp(t.TempDir(), "priv_validator_key_")
 			require.NoError(t, err)
 
-			tempStateFile, err := os.CreateTemp("", "priv_validator_state_")
+			tempStateFile, err := os.CreateTemp(t.TempDir(), "priv_validator_state_")
 			require.NoError(t, err)
 
 			privVal, err = privval.GenFilePV(tempKeyFile.Name(), tempStateFile.Name(), "")
@@ -915,15 +942,9 @@ type mockTicker struct {
 	fired    bool
 }
 
-func (m *mockTicker) Start(context.Context) error {
-	return nil
-}
-
-func (m *mockTicker) Stop() error {
-	return nil
-}
-
-func (m *mockTicker) IsRunning() bool { return false }
+func (m *mockTicker) Start(context.Context) error { return nil }
+func (m *mockTicker) Stop()                       {}
+func (m *mockTicker) IsRunning() bool             { return false }
 
 func (m *mockTicker) ScheduleTimeout(ti timeoutInfo) {
 	m.mtx.Lock()
@@ -941,22 +962,11 @@ func (m *mockTicker) Chan() <-chan timeoutInfo {
 	return m.c
 }
 
-func (*mockTicker) SetLogger(log.Logger) {}
-
-func newPersistentKVStore(t *testing.T, logger log.Logger) abci.Application {
-	t.Helper()
-
-	dir, err := os.MkdirTemp("", "persistent-kvstore")
-	require.NoError(t, err)
-
-	return kvstore.NewPersistentKVStoreApplication(logger, dir)
-}
-
-func newKVStore(_ *testing.T, _ log.Logger) abci.Application {
+func newEpehemeralKVStore(_ log.Logger, _ string) abci.Application {
 	return kvstore.NewApplication()
 }
 
-func newPersistentKVStoreWithPath(logger log.Logger, dbDir string) abci.Application {
+func newPersistentKVStore(logger log.Logger, dbDir string) abci.Application {
 	return kvstore.NewPersistentKVStoreApplication(logger, dbDir)
 }
 

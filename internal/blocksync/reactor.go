@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -71,6 +70,8 @@ type Reactor struct {
 
 	// immutable
 	initialState sm.State
+	// store
+	stateStore sm.Store
 
 	blockExec   *sm.BlockExecutor
 	store       *store.BlockStore
@@ -92,11 +93,6 @@ type Reactor struct {
 	requestsCh <-chan BlockRequest
 	errorsCh   <-chan peerError
 
-	// poolWG is used to synchronize the graceful shutdown of the poolRoutine and
-	// requestRoutine spawned goroutines when stopping the reactor and before
-	// stopping the p2p Channel(s).
-	poolWG sync.WaitGroup
-
 	metrics  *consensus.Metrics
 	eventBus *eventbus.EventBus
 
@@ -107,7 +103,7 @@ type Reactor struct {
 func NewReactor(
 	ctx context.Context,
 	logger log.Logger,
-	state sm.State,
+	stateStore sm.Store,
 	blockExec *sm.BlockExecutor,
 	store *store.BlockStore,
 	consReactor consensusReactor,
@@ -117,19 +113,6 @@ func NewReactor(
 	metrics *consensus.Metrics,
 	eventBus *eventbus.EventBus,
 ) (*Reactor, error) {
-
-	if state.LastBlockHeight != store.Height() {
-		return nil, fmt.Errorf("state (%v) and store (%v) height mismatch", state.LastBlockHeight, store.Height())
-	}
-
-	startHeight := store.Height() + 1
-	if startHeight == 1 {
-		startHeight = state.InitialHeight
-	}
-
-	requestsCh := make(chan BlockRequest, maxTotalRequesters)
-	errorsCh := make(chan peerError, maxPeerErrBuffer) // NOTE: The capacity should be larger than the peer count.
-
 	blockSyncCh, err := channelCreator(ctx, GetChannelDescriptor())
 	if err != nil {
 		return nil, err
@@ -137,20 +120,16 @@ func NewReactor(
 
 	r := &Reactor{
 		logger:               logger,
-		initialState:         state,
+		stateStore:           stateStore,
 		blockExec:            blockExec,
 		store:                store,
-		pool:                 NewBlockPool(logger, startHeight, requestsCh, errorsCh),
 		consReactor:          consReactor,
 		blockSync:            newAtomicBool(blockSync),
-		requestsCh:           requestsCh,
-		errorsCh:             errorsCh,
 		blockSyncCh:          blockSyncCh,
 		blockSyncOutBridgeCh: make(chan p2p.Envelope),
 		peerUpdates:          peerUpdates,
 		metrics:              metrics,
 		eventBus:             eventBus,
-		syncStartTime:        time.Time{},
 	}
 
 	r.BaseService = *service.NewBaseService(logger, "BlockSync", r)
@@ -165,14 +144,33 @@ func NewReactor(
 // If blockSync is enabled, we also start the pool and the pool processing
 // goroutine. If the pool fails to start, an error is returned.
 func (r *Reactor) OnStart(ctx context.Context) error {
+	state, err := r.stateStore.Load()
+	if err != nil {
+		return err
+	}
+	r.initialState = state
+
+	if state.LastBlockHeight != r.store.Height() {
+		return fmt.Errorf("state (%v) and store (%v) height mismatch", state.LastBlockHeight, r.store.Height())
+	}
+
+	startHeight := r.store.Height() + 1
+	if startHeight == 1 {
+		startHeight = state.InitialHeight
+	}
+
+	requestsCh := make(chan BlockRequest, maxTotalRequesters)
+	errorsCh := make(chan peerError, maxPeerErrBuffer) // NOTE: The capacity should be larger than the peer count.
+	r.pool = NewBlockPool(r.logger, startHeight, requestsCh, errorsCh)
+	r.requestsCh = requestsCh
+	r.errorsCh = errorsCh
+
 	if r.blockSync.IsSet() {
 		if err := r.pool.Start(ctx); err != nil {
 			return err
 		}
-		r.poolWG.Add(1)
 		go r.requestRoutine(ctx)
 
-		r.poolWG.Add(1)
 		go r.poolRoutine(ctx, false)
 	}
 
@@ -187,13 +185,8 @@ func (r *Reactor) OnStart(ctx context.Context) error {
 // blocking until they all exit.
 func (r *Reactor) OnStop() {
 	if r.blockSync.IsSet() {
-		if err := r.pool.Stop(); err != nil {
-			r.logger.Error("failed to stop pool", "err", err)
-		}
+		r.pool.Stop()
 	}
-
-	// wait for the poolRoutine and requestRoutine goroutines to gracefully exit
-	r.poolWG.Wait()
 }
 
 // respondToPeer loads a block and sends it to the requesting peer, if we have it.
@@ -378,10 +371,8 @@ func (r *Reactor) SwitchToBlockSync(ctx context.Context, state sm.State) error {
 
 	r.syncStartTime = time.Now()
 
-	r.poolWG.Add(1)
 	go r.requestRoutine(ctx)
 
-	r.poolWG.Add(1)
 	go r.poolRoutine(ctx, true)
 
 	return nil
@@ -391,17 +382,20 @@ func (r *Reactor) requestRoutine(ctx context.Context) {
 	statusUpdateTicker := time.NewTicker(statusUpdateIntervalSeconds * time.Second)
 	defer statusUpdateTicker.Stop()
 
-	defer r.poolWG.Done()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case request := <-r.requestsCh:
-			r.blockSyncOutBridgeCh <- p2p.Envelope{
+			select {
+			case <-ctx.Done():
+				return
+			case r.blockSyncOutBridgeCh <- p2p.Envelope{
 				To:      request.PeerID,
 				Message: &bcproto.BlockRequest{Height: request.Height},
+			}:
 			}
+
 		case pErr := <-r.errorsCh:
 			if err := r.blockSyncCh.SendError(ctx, p2p.PeerError{
 				NodeID: pErr.peerID,
@@ -410,17 +404,14 @@ func (r *Reactor) requestRoutine(ctx context.Context) {
 				return
 			}
 		case <-statusUpdateTicker.C:
-			r.poolWG.Add(1)
-
 			go func() {
-				defer r.poolWG.Done()
-
 				select {
+				case <-ctx.Done():
+					return
 				case r.blockSyncOutBridgeCh <- p2p.Envelope{
 					Broadcast: true,
 					Message:   &bcproto.StatusRequest{},
 				}:
-				case <-ctx.Done():
 				}
 			}()
 		}
@@ -450,11 +441,12 @@ func (r *Reactor) poolRoutine(ctx context.Context, stateSynced bool) {
 	defer trySyncTicker.Stop()
 	defer switchToConsensusTicker.Stop()
 
-	defer r.poolWG.Done()
-
-FOR_LOOP:
 	for {
 		select {
+		case <-ctx.Done():
+			return
+		case <-r.pool.exitedCh:
+			return
 		case <-switchToConsensusTicker.C:
 			var (
 				height, numPending, lenRequesters = r.pool.GetStatus()
@@ -485,9 +477,7 @@ FOR_LOOP:
 				continue
 			}
 
-			if err := r.pool.Stop(); err != nil {
-				r.logger.Error("failed to stop pool", "err", err)
-			}
+			r.pool.Stop()
 
 			r.blockSync.UnSet()
 
@@ -495,14 +485,13 @@ FOR_LOOP:
 				r.consReactor.SwitchToConsensus(ctx, state, blocksSynced > 0 || stateSynced)
 			}
 
-			break FOR_LOOP
+			return
 
 		case <-trySyncTicker.C:
 			select {
 			case didProcessCh <- struct{}{}:
 			default:
 			}
-
 		case <-didProcessCh:
 			// NOTE: It is a subtle mistake to process more than a single block at a
 			// time (e.g. 10) here, because we only send one BlockRequest per loop
@@ -517,7 +506,7 @@ FOR_LOOP:
 			first, second := r.pool.PeekTwoBlocks()
 			if first == nil || second == nil {
 				// we need both to sync the first block
-				continue FOR_LOOP
+				continue
 			} else {
 				// try again quickly next loop
 				didProcessCh <- struct{}{}
@@ -528,7 +517,7 @@ FOR_LOOP:
 				r.logger.Error("failed to make ",
 					"height", first.Height,
 					"err", err.Error())
-				break FOR_LOOP
+				return
 			}
 
 			var (
@@ -557,7 +546,7 @@ FOR_LOOP:
 					NodeID: peerID,
 					Err:    err,
 				}); serr != nil {
-					break FOR_LOOP
+					return
 				}
 
 				peerID2 := r.pool.RedoRequest(second.Height)
@@ -566,11 +555,9 @@ FOR_LOOP:
 						NodeID: peerID2,
 						Err:    err,
 					}); serr != nil {
-						break FOR_LOOP
+						return
 					}
 				}
-
-				continue FOR_LOOP
 			} else {
 				r.pool.PopRequest()
 
@@ -603,13 +590,6 @@ FOR_LOOP:
 					lastHundred = time.Now()
 				}
 			}
-
-			continue FOR_LOOP
-
-		case <-ctx.Done():
-			break FOR_LOOP
-		case <-r.pool.exitedCh:
-			break FOR_LOOP
 		}
 	}
 }

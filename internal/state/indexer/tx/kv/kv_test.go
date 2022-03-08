@@ -3,7 +3,6 @@ package kv
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 
 	"github.com/gogo/protobuf/proto"
@@ -26,7 +25,7 @@ func TestTxIndex(t *testing.T) {
 		Height: 1,
 		Index:  0,
 		Tx:     tx,
-		Result: abci.ResponseDeliverTx{
+		Result: abci.ExecTxResult{
 			Data: []byte{0},
 			Code: abci.CodeTypeOK, Log: "", Events: nil,
 		},
@@ -49,7 +48,7 @@ func TestTxIndex(t *testing.T) {
 		Height: 1,
 		Index:  0,
 		Tx:     tx2,
-		Result: abci.ResponseDeliverTx{
+		Result: abci.ExecTxResult{
 			Data: []byte{0},
 			Code: abci.CodeTypeOK, Log: "", Events: nil,
 		},
@@ -323,7 +322,7 @@ func txResultWithEvents(events []abci.Event) *abci.TxResult {
 		Height: 1,
 		Index:  0,
 		Tx:     tx,
-		Result: abci.ResponseDeliverTx{
+		Result: abci.ExecTxResult{
 			Data:   []byte{0},
 			Code:   abci.CodeTypeOK,
 			Log:    "",
@@ -333,9 +332,7 @@ func txResultWithEvents(events []abci.Event) *abci.TxResult {
 }
 
 func benchmarkTxIndex(txsCount int64, b *testing.B) {
-	dir, err := os.MkdirTemp("", "tx_index_db")
-	require.NoError(b, err)
-	defer os.RemoveAll(dir)
+	dir := b.TempDir()
 
 	store, err := dbm.NewDB("tx_index", "goleveldb", dir)
 	require.NoError(b, err)
@@ -349,7 +346,7 @@ func benchmarkTxIndex(txsCount int64, b *testing.B) {
 			Height: 1,
 			Index:  txIndex,
 			Tx:     tx,
-			Result: abci.ResponseDeliverTx{
+			Result: abci.ExecTxResult{
 				Data:   []byte{0},
 				Code:   abci.CodeTypeOK,
 				Log:    "",

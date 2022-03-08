@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/tendermint/tendermint/crypto"
-	tmsync "github.com/tendermint/tendermint/internal/libs/sync"
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/types"
 )
@@ -95,17 +94,23 @@ type MemoryTransport struct {
 	bufferSize int
 
 	acceptCh chan *MemoryConnection
+	closeCh  chan struct{}
+	closeFn  func()
 }
 
 // newMemoryTransport creates a new MemoryTransport. This is for internal use by
 // MemoryNetwork, use MemoryNetwork.CreateTransport() instead.
 func newMemoryTransport(network *MemoryNetwork, nodeID types.NodeID) *MemoryTransport {
+	once := &sync.Once{}
+	closeCh := make(chan struct{})
 	return &MemoryTransport{
 		logger:     network.logger.With("local", nodeID),
 		network:    network,
 		nodeID:     nodeID,
 		bufferSize: network.bufferSize,
 		acceptCh:   make(chan *MemoryConnection),
+		closeCh:    closeCh,
+		closeFn:    func() { once.Do(func() { close(closeCh) }) },
 	}
 }
 
@@ -142,6 +147,8 @@ func (t *MemoryTransport) Endpoints() []Endpoint {
 // Accept implements Transport.
 func (t *MemoryTransport) Accept(ctx context.Context) (Connection, error) {
 	select {
+	case <-t.closeCh:
+		return nil, io.EOF
 	case conn := <-t.acceptCh:
 		t.logger.Info("accepted connection", "remote", conn.RemoteEndpoint().Path)
 		return conn, nil
@@ -175,10 +182,17 @@ func (t *MemoryTransport) Dial(ctx context.Context, endpoint Endpoint) (Connecti
 
 	inCh := make(chan memoryMessage, t.bufferSize)
 	outCh := make(chan memoryMessage, t.bufferSize)
-	closer := tmsync.NewCloser()
 
-	outConn := newMemoryConnection(t.logger, t.nodeID, peer.nodeID, inCh, outCh, closer)
-	inConn := newMemoryConnection(peer.logger, peer.nodeID, t.nodeID, outCh, inCh, closer)
+	once := &sync.Once{}
+	closeCh := make(chan struct{})
+	closeFn := func() { once.Do(func() { close(closeCh) }) }
+
+	outConn := newMemoryConnection(t.logger, t.nodeID, peer.nodeID, inCh, outCh)
+	outConn.closeCh = closeCh
+	outConn.closeFn = closeFn
+	inConn := newMemoryConnection(peer.logger, peer.nodeID, t.nodeID, outCh, inCh)
+	inConn.closeCh = closeCh
+	inConn.closeFn = closeFn
 
 	select {
 	case peer.acceptCh <- inConn:
@@ -191,6 +205,7 @@ func (t *MemoryTransport) Dial(ctx context.Context, endpoint Endpoint) (Connecti
 // Close implements Transport.
 func (t *MemoryTransport) Close() error {
 	t.network.RemoveTransport(t.nodeID)
+	t.closeFn()
 	return nil
 }
 
@@ -202,7 +217,9 @@ type MemoryConnection struct {
 
 	receiveCh <-chan memoryMessage
 	sendCh    chan<- memoryMessage
-	closer    *tmsync.Closer
+
+	closeFn func()
+	closeCh <-chan struct{}
 }
 
 // memoryMessage is passed internally, containing either a message or handshake.
@@ -222,7 +239,6 @@ func newMemoryConnection(
 	remoteID types.NodeID,
 	receiveCh <-chan memoryMessage,
 	sendCh chan<- memoryMessage,
-	closer *tmsync.Closer,
 ) *MemoryConnection {
 	return &MemoryConnection{
 		logger:    logger.With("remote", remoteID),
@@ -230,7 +246,6 @@ func newMemoryConnection(
 		remoteID:  remoteID,
 		receiveCh: receiveCh,
 		sendCh:    sendCh,
-		closer:    closer,
 	}
 }
 
@@ -264,7 +279,7 @@ func (c *MemoryConnection) Handshake(
 	select {
 	case c.sendCh <- memoryMessage{nodeInfo: &nodeInfo, pubKey: privKey.PubKey()}:
 		c.logger.Debug("sent handshake", "nodeInfo", nodeInfo)
-	case <-c.closer.Done():
+	case <-c.closeCh:
 		return types.NodeInfo{}, nil, io.EOF
 	case <-ctx.Done():
 		return types.NodeInfo{}, nil, ctx.Err()
@@ -277,7 +292,7 @@ func (c *MemoryConnection) Handshake(
 		}
 		c.logger.Debug("received handshake", "peerInfo", msg.nodeInfo)
 		return *msg.nodeInfo, msg.pubKey, nil
-	case <-c.closer.Done():
+	case <-c.closeCh:
 		return types.NodeInfo{}, nil, io.EOF
 	case <-ctx.Done():
 		return types.NodeInfo{}, nil, ctx.Err()
@@ -289,7 +304,7 @@ func (c *MemoryConnection) ReceiveMessage(ctx context.Context) (ChannelID, []byt
 	// Check close first, since channels are buffered. Otherwise, below select
 	// may non-deterministically return non-error even when closed.
 	select {
-	case <-c.closer.Done():
+	case <-c.closeCh:
 		return 0, nil, io.EOF
 	case <-ctx.Done():
 		return 0, nil, io.EOF
@@ -300,7 +315,9 @@ func (c *MemoryConnection) ReceiveMessage(ctx context.Context) (ChannelID, []byt
 	case msg := <-c.receiveCh:
 		c.logger.Debug("received message", "chID", msg.channelID, "msg", msg.message)
 		return msg.channelID, msg.message, nil
-	case <-c.closer.Done():
+	case <-ctx.Done():
+		return 0, nil, io.EOF
+	case <-c.closeCh:
 		return 0, nil, io.EOF
 	}
 }
@@ -310,7 +327,7 @@ func (c *MemoryConnection) SendMessage(ctx context.Context, chID ChannelID, msg 
 	// Check close first, since channels are buffered. Otherwise, below select
 	// may non-deterministically return non-error even when closed.
 	select {
-	case <-c.closer.Done():
+	case <-c.closeCh:
 		return io.EOF
 	case <-ctx.Done():
 		return io.EOF
@@ -323,19 +340,10 @@ func (c *MemoryConnection) SendMessage(ctx context.Context, chID ChannelID, msg 
 		return nil
 	case <-ctx.Done():
 		return io.EOF
-	case <-c.closer.Done():
+	case <-c.closeCh:
 		return io.EOF
 	}
 }
 
 // Close implements Connection.
-func (c *MemoryConnection) Close() error {
-	select {
-	case <-c.closer.Done():
-		return nil
-	default:
-		c.closer.Close()
-		c.logger.Info("closed connection")
-	}
-	return nil
-}
+func (c *MemoryConnection) Close() error { c.closeFn(); return nil }

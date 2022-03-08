@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	dbm "github.com/tendermint/tm-db"
+
 	abcitypes "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/internal/state/indexer"
@@ -16,7 +18,6 @@ import (
 	"github.com/tendermint/tendermint/libs/log"
 	prototmstate "github.com/tendermint/tendermint/proto/tendermint/state"
 	"github.com/tendermint/tendermint/types"
-	dbm "github.com/tendermint/tm-db"
 
 	_ "github.com/lib/pq" // for the psql sink
 )
@@ -110,7 +111,7 @@ func TestLoadEventSink(t *testing.T) {
 }
 
 func TestLoadBlockStore(t *testing.T) {
-	testCfg, err := config.ResetTestRoot(t.Name())
+	testCfg, err := config.ResetTestRoot(t.TempDir(), t.Name())
 	require.NoError(t, err)
 	testCfg.DBBackend = "goleveldb"
 	_, _, err = loadStateAndBlockStore(testCfg)
@@ -152,11 +153,11 @@ func TestReIndexEvent(t *testing.T) {
 		On("IndexTxEvents", mock.AnythingOfType("[]*types.TxResult")).Return(errors.New("")).Once().
 		On("IndexTxEvents", mock.AnythingOfType("[]*types.TxResult")).Return(nil)
 
-	dtx := abcitypes.ResponseDeliverTx{}
+	dtx := abcitypes.ExecTxResult{}
 	abciResp := &prototmstate.ABCIResponses{
-		DeliverTxs: []*abcitypes.ResponseDeliverTx{&dtx},
-		EndBlock:   &abcitypes.ResponseEndBlock{},
-		BeginBlock: &abcitypes.ResponseBeginBlock{},
+		FinalizeBlock: &abcitypes.ResponseFinalizeBlock{
+			TxResults: []*abcitypes.ExecTxResult{&dtx},
+		},
 	}
 
 	mockStateStore.

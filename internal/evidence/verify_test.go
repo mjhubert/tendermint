@@ -12,6 +12,7 @@ import (
 
 	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/crypto/tmhash"
+	"github.com/tendermint/tendermint/internal/eventbus"
 	"github.com/tendermint/tendermint/internal/evidence"
 	"github.com/tendermint/tendermint/internal/evidence/mocks"
 	sm "github.com/tendermint/tendermint/internal/state"
@@ -76,6 +77,7 @@ func TestVerify_LunaticAttackAgainstState(t *testing.T) {
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	logger := log.NewNopLogger()
 
 	attackTime := defaultEvidenceTime.Add(1 * time.Hour)
 	// create valid lunatic evidence
@@ -96,12 +98,11 @@ func TestVerify_LunaticAttackAgainstState(t *testing.T) {
 	blockStore.On("LoadBlockMeta", height).Return(&types.BlockMeta{Header: *trusted.Header})
 	blockStore.On("LoadBlockCommit", commonHeight).Return(common.Commit)
 	blockStore.On("LoadBlockCommit", height).Return(trusted.Commit)
-	pool, err := evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, blockStore)
-	require.NoError(t, err)
+	pool := evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, blockStore, evidence.NopMetrics(), nil)
 
 	evList := types.EvidenceList{ev}
 	// check that the evidence pool correctly verifies the evidence
-	assert.NoError(t, pool.CheckEvidence(evList))
+	assert.NoError(t, pool.CheckEvidence(ctx, evList))
 
 	// as it was not originally in the pending bucket, it should now have been added
 	pendingEvs, _ := pool.PendingEvidence(state.ConsensusParams.Evidence.MaxBytes)
@@ -111,29 +112,31 @@ func TestVerify_LunaticAttackAgainstState(t *testing.T) {
 	// if we submit evidence only against a single byzantine validator when we see there are more validators then this
 	// should return an error
 	ev.ByzantineValidators = ev.ByzantineValidators[:1]
-	t.Log(evList)
-	assert.Error(t, pool.CheckEvidence(evList))
+	assert.Error(t, pool.CheckEvidence(ctx, evList))
 	// restore original byz vals
 	ev.ByzantineValidators = ev.GetByzantineValidators(common.ValidatorSet, trusted.SignedHeader)
 
 	// duplicate evidence should be rejected
 	evList = types.EvidenceList{ev, ev}
-	pool, err = evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, blockStore)
-	require.NoError(t, err)
-	assert.Error(t, pool.CheckEvidence(evList))
+	pool = evidence.NewPool(logger, dbm.NewMemDB(), stateStore, blockStore, evidence.NopMetrics(), nil)
+	assert.Error(t, pool.CheckEvidence(ctx, evList))
 
 	// If evidence is submitted with an altered timestamp it should return an error
+	eventBus := eventbus.NewDefault(logger)
+	require.NoError(t, eventBus.Start(ctx))
+
 	ev.Timestamp = defaultEvidenceTime.Add(1 * time.Minute)
-	pool, err = evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, blockStore)
-	require.NoError(t, err)
-	assert.Error(t, pool.AddEvidence(ev))
+	pool = evidence.NewPool(logger, dbm.NewMemDB(), stateStore, blockStore, evidence.NopMetrics(), eventBus)
+
+	err := pool.AddEvidence(ctx, ev)
+	assert.Error(t, err)
 	ev.Timestamp = defaultEvidenceTime
 
 	// Evidence submitted with a different validator power should fail
 	ev.TotalVotingPower = 1
-	pool, err = evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, blockStore)
-	require.NoError(t, err)
-	assert.Error(t, pool.AddEvidence(ev))
+	pool = evidence.NewPool(logger, dbm.NewMemDB(), stateStore, blockStore, evidence.NopMetrics(), nil)
+	err = pool.AddEvidence(ctx, ev)
+	assert.Error(t, err)
 	ev.TotalVotingPower = common.ValidatorSet.TotalVotingPower()
 }
 
@@ -149,6 +152,9 @@ func TestVerify_ForwardLunaticAttack(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	logger := log.NewNopLogger()
+
 	// create a forward lunatic attack
 	ev, trusted, common := makeLunaticEvidence(ctx,
 		t, attackHeight, commonHeight, totalVals, byzVals, totalVals-byzVals, defaultEvidenceTime, attackTime)
@@ -174,11 +180,14 @@ func TestVerify_ForwardLunaticAttack(t *testing.T) {
 	blockStore.On("LoadBlockCommit", commonHeight).Return(common.Commit)
 	blockStore.On("LoadBlockCommit", nodeHeight).Return(trusted.Commit)
 	blockStore.On("Height").Return(nodeHeight)
-	pool, err := evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, blockStore)
-	require.NoError(t, err)
+
+	eventBus := eventbus.NewDefault(logger)
+	require.NoError(t, eventBus.Start(ctx))
+
+	pool := evidence.NewPool(logger, dbm.NewMemDB(), stateStore, blockStore, evidence.NopMetrics(), eventBus)
 
 	// check that the evidence pool correctly verifies the evidence
-	assert.NoError(t, pool.CheckEvidence(types.EvidenceList{ev}))
+	assert.NoError(t, pool.CheckEvidence(ctx, types.EvidenceList{ev}))
 
 	// now we use a time which isn't able to contradict the FLA - thus we can't verify the evidence
 	oldBlockStore := &mocks.BlockStore{}
@@ -192,14 +201,15 @@ func TestVerify_ForwardLunaticAttack(t *testing.T) {
 	oldBlockStore.On("Height").Return(nodeHeight)
 	require.Equal(t, defaultEvidenceTime, oldBlockStore.LoadBlockMeta(nodeHeight).Header.Time)
 
-	pool, err = evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, oldBlockStore)
-	require.NoError(t, err)
-	assert.Error(t, pool.CheckEvidence(types.EvidenceList{ev}))
+	pool = evidence.NewPool(logger, dbm.NewMemDB(), stateStore, oldBlockStore, evidence.NopMetrics(), nil)
+	assert.Error(t, pool.CheckEvidence(ctx, types.EvidenceList{ev}))
 }
 
 func TestVerifyLightClientAttack_Equivocation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	logger := log.NewNopLogger()
 
 	conflictingVals, conflictingPrivVals := factory.ValidatorSet(ctx, t, 5, 10)
 
@@ -282,11 +292,13 @@ func TestVerifyLightClientAttack_Equivocation(t *testing.T) {
 	blockStore.On("LoadBlockMeta", int64(10)).Return(&types.BlockMeta{Header: *trustedHeader})
 	blockStore.On("LoadBlockCommit", int64(10)).Return(trustedCommit)
 
-	pool, err := evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, blockStore)
-	require.NoError(t, err)
+	eventBus := eventbus.NewDefault(logger)
+	require.NoError(t, eventBus.Start(ctx))
+
+	pool := evidence.NewPool(logger, dbm.NewMemDB(), stateStore, blockStore, evidence.NopMetrics(), eventBus)
 
 	evList := types.EvidenceList{ev}
-	err = pool.CheckEvidence(evList)
+	err = pool.CheckEvidence(ctx, evList)
 	assert.NoError(t, err)
 
 	pendingEvs, _ := pool.PendingEvidence(state.ConsensusParams.Evidence.MaxBytes)
@@ -296,6 +308,9 @@ func TestVerifyLightClientAttack_Equivocation(t *testing.T) {
 func TestVerifyLightClientAttack_Amnesia(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	logger := log.NewNopLogger()
+
 	var height int64 = 10
 	conflictingVals, conflictingPrivVals := factory.ValidatorSet(ctx, t, 5, 10)
 
@@ -369,11 +384,13 @@ func TestVerifyLightClientAttack_Amnesia(t *testing.T) {
 	blockStore.On("LoadBlockMeta", int64(10)).Return(&types.BlockMeta{Header: *trustedHeader})
 	blockStore.On("LoadBlockCommit", int64(10)).Return(trustedCommit)
 
-	pool, err := evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, blockStore)
-	require.NoError(t, err)
+	eventBus := eventbus.NewDefault(logger)
+	require.NoError(t, eventBus.Start(ctx))
+
+	pool := evidence.NewPool(logger, dbm.NewMemDB(), stateStore, blockStore, evidence.NopMetrics(), eventBus)
 
 	evList := types.EvidenceList{ev}
-	err = pool.CheckEvidence(evList)
+	err = pool.CheckEvidence(ctx, evList)
 	assert.NoError(t, err)
 
 	pendingEvs, _ := pool.PendingEvidence(state.ConsensusParams.Evidence.MaxBytes)
@@ -390,6 +407,7 @@ func TestVerifyDuplicateVoteEvidence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	logger := log.NewNopLogger()
 	val := types.NewMockPV()
 	val2 := types.NewMockPV()
 	valSet := types.NewValidatorSet([]*types.Validator{val.ExtractIntoValidator(ctx, 1)})
@@ -467,21 +485,24 @@ func TestVerifyDuplicateVoteEvidence(t *testing.T) {
 	blockStore := &mocks.BlockStore{}
 	blockStore.On("LoadBlockMeta", int64(10)).Return(&types.BlockMeta{Header: types.Header{Time: defaultEvidenceTime}})
 
-	pool, err := evidence.NewPool(log.TestingLogger(), dbm.NewMemDB(), stateStore, blockStore)
-	require.NoError(t, err)
+	eventBus := eventbus.NewDefault(logger)
+	require.NoError(t, eventBus.Start(ctx))
+
+	pool := evidence.NewPool(logger, dbm.NewMemDB(), stateStore, blockStore, evidence.NopMetrics(), eventBus)
+	startPool(t, pool, stateStore)
 
 	evList := types.EvidenceList{goodEv}
-	err = pool.CheckEvidence(evList)
+	err = pool.CheckEvidence(ctx, evList)
 	assert.NoError(t, err)
 
 	// evidence with a different validator power should fail
 	evList = types.EvidenceList{badEv}
-	err = pool.CheckEvidence(evList)
+	err = pool.CheckEvidence(ctx, evList)
 	assert.Error(t, err)
 
 	// evidence with a different timestamp should fail
 	evList = types.EvidenceList{badTimeEv}
-	err = pool.CheckEvidence(evList)
+	err = pool.CheckEvidence(ctx, evList)
 	assert.Error(t, err)
 }
 

@@ -10,15 +10,18 @@ import (
 	"time"
 
 	"github.com/rs/cors"
+
+	abciclient "github.com/tendermint/tendermint/abci/client"
 	"github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/internal/blocksync"
 	"github.com/tendermint/tendermint/internal/consensus"
 	"github.com/tendermint/tendermint/internal/eventbus"
+	"github.com/tendermint/tendermint/internal/eventlog"
 	"github.com/tendermint/tendermint/internal/mempool"
 	"github.com/tendermint/tendermint/internal/p2p"
-	"github.com/tendermint/tendermint/internal/proxy"
 	tmpubsub "github.com/tendermint/tendermint/internal/pubsub"
+	"github.com/tendermint/tendermint/internal/pubsub/query"
 	sm "github.com/tendermint/tendermint/internal/state"
 	"github.com/tendermint/tendermint/internal/state/indexer"
 	"github.com/tendermint/tendermint/internal/statesync"
@@ -54,12 +57,6 @@ type consensusState interface {
 	GetRoundStateSimpleJSON() ([]byte, error)
 }
 
-type transport interface {
-	Listeners() []string
-	IsListening() bool
-	NodeInfo() types.NodeInfo
-}
-
 type peerManager interface {
 	Peers() []types.NodeID
 	Addresses(types.NodeID) []p2p.NodeAddress
@@ -70,8 +67,7 @@ type peerManager interface {
 // to be setup once during startup.
 type Environment struct {
 	// external, thread safe interfaces
-	ProxyAppQuery   proxy.AppConnQuery
-	ProxyAppMempool proxy.AppConnMempool
+	ProxyApp abciclient.Client
 
 	// interfaces defined in types and above
 	StateStore       sm.Store
@@ -81,8 +77,9 @@ type Environment struct {
 	ConsensusReactor *consensus.Reactor
 	BlockSyncReactor *blocksync.Reactor
 
-	// Legacy p2p stack
-	P2PTransport transport
+	IsListening bool
+	Listeners   []string
+	NodeInfo    types.NodeInfo
 
 	// interfaces for new p2p interfaces
 	PeerManager peerManager
@@ -92,6 +89,7 @@ type Environment struct {
 	GenDoc            *types.GenesisDoc // cache the genesis structure
 	EventSinks        []indexer.EventSink
 	EventBus          *eventbus.EventBus // thread safe
+	EventLog          *eventlog.Log
 	Mempool           mempool.Mempool
 	StateSyncMetricer statesync.Metricer
 
@@ -222,6 +220,10 @@ func (env *Environment) StartService(ctx context.Context, conf *config.Config) (
 		return nil, err
 	}
 
+	env.Listeners = []string{
+		fmt.Sprintf("Listener(@%v)", conf.P2P.ExternalAddress),
+	}
+
 	listenAddrs := strings.SplitAndTrimEmpty(conf.RPC.ListenAddress, ",", " ")
 	routes := NewRoutesMap(env, &RouteOptions{
 		Unsafe: conf.RPC.Unsafe,
@@ -238,23 +240,66 @@ func (env *Environment) StartService(ctx context.Context, conf *config.Config) (
 		cfg.WriteTimeout = conf.RPC.TimeoutBroadcastTxCommit + 1*time.Second
 	}
 
-	// we may expose the rpc over both a unix and tcp socket
+	// If the event log is enabled, subscribe to all events published to the
+	// event bus, and forward them to the event log.
+	if lg := env.EventLog; lg != nil {
+		// TODO(creachadair): This is kind of a hack, ideally we'd share the
+		// observer with the indexer, but it's tricky to plumb them together.
+		// For now, use a "normal" subscription with a big buffer allowance.
+		// The event log should always be able to keep up.
+		const subscriberID = "event-log-subscriber"
+		sub, err := env.EventBus.SubscribeWithArgs(ctx, tmpubsub.SubscribeArgs{
+			ClientID: subscriberID,
+			Query:    query.All,
+			Limit:    1 << 16, // essentially "no limit"
+		})
+		if err != nil {
+			return nil, fmt.Errorf("event log subscribe: %w", err)
+		}
+		go func() {
+			// N.B. Use background for unsubscribe, ctx is already terminated.
+			defer env.EventBus.UnsubscribeAll(context.Background(), subscriberID) // nolint:errcheck
+			for {
+				msg, err := sub.Next(ctx)
+				if err != nil {
+					env.Logger.Error("Subscription terminated", "err", err)
+					return
+				}
+				etype, ok := eventlog.FindType(msg.Events())
+				if ok {
+					_ = lg.Add(etype, msg.Data())
+				}
+			}
+		}()
+
+		env.Logger.Info("Event log subscription enabled")
+	}
+
+	// We may expose the RPC over both TCP and a Unix-domain socket.
 	listeners := make([]net.Listener, len(listenAddrs))
 	for i, listenAddr := range listenAddrs {
 		mux := http.NewServeMux()
 		rpcLogger := env.Logger.With("module", "rpc-server")
-		wmLogger := rpcLogger.With("protocol", "websocket")
-		wm := rpcserver.NewWebsocketManager(wmLogger, routes,
-			rpcserver.OnDisconnect(func(remoteAddr string) {
-				err := env.EventBus.UnsubscribeAll(context.Background(), remoteAddr)
-				if err != nil && err != tmpubsub.ErrSubscriptionNotFound {
-					wmLogger.Error("Failed to unsubscribe addr from events", "addr", remoteAddr, "err", err)
-				}
-			}),
-			rpcserver.ReadLimit(cfg.MaxBodyBytes),
-		)
-		mux.HandleFunc("/websocket", wm.WebsocketHandler)
 		rpcserver.RegisterRPCFuncs(mux, routes, rpcLogger)
+
+		if conf.RPC.ExperimentalDisableWebsocket {
+			rpcLogger.Info("Disabling websocket endpoints (experimental-disable-websocket=true)")
+		} else {
+			rpcLogger.Info("WARNING: Websocket RPC access is deprecated and will be removed " +
+				"in Tendermint v0.37. See https://tinyurl.com/adr075 for more information.")
+			wmLogger := rpcLogger.With("protocol", "websocket")
+			wm := rpcserver.NewWebsocketManager(wmLogger, routes,
+				rpcserver.OnDisconnect(func(remoteAddr string) {
+					err := env.EventBus.UnsubscribeAll(context.Background(), remoteAddr)
+					if err != nil && err != tmpubsub.ErrSubscriptionNotFound {
+						wmLogger.Error("Failed to unsubscribe addr from events", "addr", remoteAddr, "err", err)
+					}
+				}),
+				rpcserver.ReadLimit(cfg.MaxBodyBytes),
+			)
+			mux.HandleFunc("/websocket", wm.WebsocketHandler)
+		}
+
 		listener, err := rpcserver.Listen(
 			listenAddr,
 			cfg.MaxOpenConnections,

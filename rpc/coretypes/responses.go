@@ -65,13 +65,12 @@ type ResultCommit struct {
 
 // ABCI results from a block
 type ResultBlockResults struct {
-	Height                int64                     `json:"height,string"`
-	TxsResults            []*abci.ResponseDeliverTx `json:"txs_results"`
-	TotalGasUsed          int64                     `json:"total_gas_used,string"`
-	BeginBlockEvents      []abci.Event              `json:"begin_block_events"`
-	EndBlockEvents        []abci.Event              `json:"end_block_events"`
-	ValidatorUpdates      []abci.ValidatorUpdate    `json:"validator_updates"`
-	ConsensusParamUpdates *tmproto.ConsensusParams  `json:"consensus_param_updates"`
+	Height                int64                    `json:"height,string"`
+	TxsResults            []*abci.ExecTxResult     `json:"txs_results"`
+	TotalGasUsed          int64                    `json:"total_gas_used,string"`
+	FinalizeBlockEvents   []abci.Event             `json:"finalize_block_events"`
+	ValidatorUpdates      []abci.ValidatorUpdate   `json:"validator_updates"`
+	ConsensusParamUpdates *tmproto.ConsensusParams `json:"consensus_param_updates"`
 }
 
 // NewResultCommit is a helper to initialize the ResultCommit with
@@ -242,10 +241,10 @@ type ResultBroadcastTx struct {
 
 // CheckTx and DeliverTx results
 type ResultBroadcastTxCommit struct {
-	CheckTx   abci.ResponseCheckTx   `json:"check_tx"`
-	DeliverTx abci.ResponseDeliverTx `json:"deliver_tx"`
-	Hash      bytes.HexBytes         `json:"hash"`
-	Height    int64                  `json:"height,string"`
+	CheckTx  abci.ResponseCheckTx `json:"check_tx"`
+	TxResult abci.ExecTxResult    `json:"tx_result"`
+	Hash     bytes.HexBytes       `json:"hash"`
+	Height   int64                `json:"height,string"`
 }
 
 // ResultCheckTx wraps abci.ResponseCheckTx.
@@ -255,12 +254,12 @@ type ResultCheckTx struct {
 
 // Result of querying for a tx
 type ResultTx struct {
-	Hash     bytes.HexBytes         `json:"hash"`
-	Height   int64                  `json:"height,string"`
-	Index    uint32                 `json:"index"`
-	TxResult abci.ResponseDeliverTx `json:"tx_result"`
-	Tx       types.Tx               `json:"tx"`
-	Proof    types.TxProof          `json:"proof,omitempty"`
+	Hash     bytes.HexBytes    `json:"hash"`
+	Height   int64             `json:"height,string"`
+	Index    uint32            `json:"index"`
+	TxResult abci.ExecTxResult `json:"tx_result"`
+	Tx       types.Tx          `json:"tx"`
+	Proof    types.TxProof     `json:"proof,omitempty"`
 }
 
 // Result of searching for txs
@@ -357,3 +356,67 @@ type Evidence struct {
 
 func (e Evidence) MarshalJSON() ([]byte, error)     { return jsontypes.Marshal(e.Value) }
 func (e *Evidence) UnmarshalJSON(data []byte) error { return jsontypes.Unmarshal(data, &e.Value) }
+
+// RequestEvents is the argument for the "/events" RPC endpoint.
+type RequestEvents struct {
+	// Optional filter spec. If nil or empty, all items are eligible.
+	Filter *EventFilter `json:"filter"`
+
+	// The maximum number of eligible items to return.
+	// If zero or negative, the server will report a default number.
+	MaxItems int `json:"maxItems"`
+
+	// Return only items after this cursor. If empty, the limit is just
+	// before the the beginning of the event log.
+	After string `json:"after"`
+
+	// Return only items before this cursor.  If empty, the limit is just
+	// after the head of the event log.
+	Before string `json:"before"`
+
+	// Wait for up to this long for events to be available.
+	WaitTime time.Duration `json:"waitTime"`
+}
+
+// An EventFilter specifies which events are selected by an /events request.
+type EventFilter struct {
+	Query string `json:"query"`
+}
+
+// ResultEvents is the response from the "/events" RPC endpoint.
+type ResultEvents struct {
+	// The items matching the request parameters, from newest
+	// to oldest, if any were available within the timeout.
+	Items []*EventItem `json:"items"`
+
+	// This is true if there is at least one older matching item
+	// available in the log that was not returned.
+	More bool `json:"more"`
+
+	// The cursor of the oldest item in the log at the time of this reply,
+	// or "" if the log is empty.
+	Oldest string `json:"oldest"`
+
+	// The cursor of the newest item in the log at the time of this reply,
+	// or "" if the log is empty.
+	Newest string `json:"newest"`
+}
+
+type EventItem struct {
+	// The cursor of this item.
+	Cursor string `json:"cursor"`
+
+	// The event label of this item (for example, "Vote").
+	Event string `json:"event,omitempty"`
+
+	// The encoded event data for this item. The content is a JSON object with
+	// the following structure:
+	//
+	//   {
+	//      "type":  "type-tag",
+	//      "value": <json-encoded-value>
+	//   }
+	//
+	// The known type tags are defined by the tendermint/types package.
+	Data json.RawMessage `json:"data"`
+}

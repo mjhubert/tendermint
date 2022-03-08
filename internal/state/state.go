@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/proto"
+
 	tmtime "github.com/tendermint/tendermint/libs/time"
 
 	tmstate "github.com/tendermint/tendermint/proto/tendermint/state"
@@ -90,7 +91,7 @@ type State struct {
 	LastHeightValidatorsChanged int64
 
 	// Consensus parameters used for validating blocks.
-	// Changes returned by EndBlock and updated after Commit.
+	// Changes returned by FinalizeBlock and updated after Commit.
 	ConsensusParams                  types.ConsensusParams
 	LastHeightConsensusParamsChanged int64
 

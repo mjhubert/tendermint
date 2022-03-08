@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"testing"
 	"time"
 
 	abciclient "github.com/tendermint/tendermint/abci/client"
@@ -57,8 +58,8 @@ func makeAddrs() (p2pAddr, rpcAddr string) {
 	return fmt.Sprintf(addrTemplate, randPort()), fmt.Sprintf(addrTemplate, randPort())
 }
 
-func CreateConfig(testName string) (*config.Config, error) {
-	c, err := config.ResetTestRoot(testName)
+func CreateConfig(t *testing.T, testName string) (*config.Config, error) {
+	c, err := config.ResetTestRoot(t.TempDir(), testName)
 	if err != nil {
 		return nil, err
 	}
@@ -66,6 +67,7 @@ func CreateConfig(testName string) (*config.Config, error) {
 	p2pAddr, rpcAddr := makeAddrs()
 	c.P2P.ListenAddress = p2pAddr
 	c.RPC.ListenAddress = rpcAddr
+	c.RPC.EventLogWindowSize = 5 * time.Minute
 	c.Consensus.WalPath = "rpc-test"
 	c.RPC.CORSAllowedOrigins = []string{"https://tendermint.com/"}
 	return c, nil
@@ -89,9 +91,14 @@ func StartTendermint(
 	if nodeOpts.suppressStdout {
 		logger = log.NewNopLogger()
 	} else {
-		logger = log.MustNewDefaultLogger(log.LogFormatPlain, log.LogLevelInfo)
+		var err error
+		logger, err = log.NewDefaultLogger(log.LogFormatPlain, log.LogLevelInfo)
+		if err != nil {
+			return nil, func(_ context.Context) error { cancel(); return nil }, err
+		}
+
 	}
-	papp := abciclient.NewLocalCreator(app)
+	papp := abciclient.NewLocalClient(logger, app)
 	tmNode, err := node.New(ctx, conf, logger, papp, nil)
 	if err != nil {
 		return nil, func(_ context.Context) error { cancel(); return nil }, err
