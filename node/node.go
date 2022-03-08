@@ -784,7 +784,7 @@ func getRouterConfig(conf *config.Config, appClient abciclient.Client) p2p.Route
 		}
 
 		opts.FilterPeerByIP = func(ctx context.Context, addr types.ProtocolAddress, port uint16) error {
-			res, err := appClient.Query().Query(ctx, abci.RequestQuery{
+			res, err := appClient.Query(ctx, abci.RequestQuery{
 				Path: fmt.Sprintf("/p2p/filter/addr/%s", net.JoinHostPort(addr.String(), strconv.Itoa(int(port)))),
 			})
 			if err != nil {
