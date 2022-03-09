@@ -23,6 +23,8 @@ https://matt.traudt.xyz/posts/2019-01-19-creating-private-v3-onion-services/
 
 `docker run -d --name gamma -e SENTRY_ROLE=GAMMA --env-file ./sentry.env tormint`
 
+`docker run -d --name delta -e SENTRY_ROLE=DELTA --env-file ./sentry.env tormint`
+
 `docker run -d --name psi -e SENTRY_ROLE=PSI --env-file ./sentry.env tormint`
 
 `docker run -d --name omega -e SENTRY_ROLE=OMEGA --env-file ./sentry.env tormint`
