@@ -189,7 +189,7 @@ then
             sed -i "s/private-peer-ids = \"\"/private-peer-ids = \"${PEER_VALIDATOR_ID_1},${PEER_VALIDATOR_ID_2},${PEER_VALIDATOR_ID_3},${PEER_VALIDATOR_ID_4}\"/" /root/.tendermint/config/config.toml
             sed -i "s/persistent-peers = \"\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3},${PEER_VALIDATOR_4},${PEER_FULL_1}\"/" /root/.tendermint/config/config.toml
       else
-            #sed -i "s/pex = true/pex = false/" /root/.tendermint/config/config.toml #error
+            sed -i "s/pex = true/pex = false/" /root/.tendermint/config/config.toml
             sed -i "s/private-peer-ids = \"\"/private-peer-ids = \"${PEER_VALIDATOR_ID_1},${PEER_VALIDATOR_ID_2},${PEER_VALIDATOR_ID_3}\"/" /root/.tendermint/config/config.toml
             sed -i "s/persistent-peers = \"\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3}\"/" /root/.tendermint/config/config.toml
       fi
