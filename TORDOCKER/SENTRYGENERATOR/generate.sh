@@ -133,41 +133,65 @@ echo "AUTH_PRIVATE_OMEGA_DELTA=$ONION_DELTA:descriptor:x25519:`cat /tmp/fullnode
 
 #Generate TENDERMINT IDs
 
-rm -rf ~/.tendermint
 cd ~/tendermint/build
-./tendermint init validator > /dev/null 2>&1
-echo "TENDER_ZIP_ALPHA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
-TENDERID_ALPHA="`./tendermint show-node-id`"
+rm -rf ./mytestnet
+./tendermint testnet > /dev/null 2>&1
+cd ./mytestnet/node0
+echo "TENDER_ZIP_ALPHA=`zip -r - . 2> /dev/null | base32 -w 0`"
+cd ../../mytestnet/node1
+echo "TENDER_ZIP_BETA=`zip -r - . 2> /dev/null | base32 -w 0`"
+cd ../../mytestnet/node2
+echo "TENDER_ZIP_GAMMA=`zip -r - . 2> /dev/null | base32 -w 0`"
+cd ../../mytestnet/node3
+echo "TENDER_ZIP_DELTA=`zip -r - . 2> /dev/null | base32 -w 0`"
+cd config
+echo "TENDER_ZIP_GENESIS=`zip -r - genesis.json 2> /dev/null | base32 -w 0`"
+cd ~/tendermint/build
+TENDERID_ALPHA="`./tendermint show-node-id --home ./mytestnet/node0`"
+TENDERID_BETA="`./tendermint show-node-id --home ./mytestnet/node1`"
+TENDERID_GAMMA="`./tendermint show-node-id --home ./mytestnet/node2`"
+TENDERID_DELTA="`./tendermint show-node-id --home ./mytestnet/node3`"
+rm -rf mytestnet
 
-rm -rf ~/.tendermint
-cd ~/tendermint/build
-./tendermint init validator > /dev/null 2>&1
-echo "TENDER_ZIP_BETA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
-TENDERID_BETA="`./tendermint show-node-id`"
+#rm -rf ~/.tendermint
+#cd ~/tendermint/build
+#./tendermint init validator > /dev/null 2>&1
+#echo "TENDER_ZIP_ALPHA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
+#TENDERID_ALPHA="`./tendermint show-node-id`"
 
-rm -rf ~/.tendermint
-cd ~/tendermint/build
-./tendermint init validator > /dev/null 2>&1
-echo "TENDER_ZIP_GAMMA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
-TENDERID_GAMMA="`./tendermint show-node-id`"
+#rm -rf ~/.tendermint
+#cd ~/tendermint/buildcd 
+#./tendermint init validator > /dev/null 2>&1
+#echo "TENDER_ZIP_BETA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
+#TENDERID_BETA="`./tendermint show-node-id`"
 
-rm -rf ~/.tendermint
-cd ~/tendermint/build
-./tendermint init validator > /dev/null 2>&1
-echo "TENDER_ZIP_DELTA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
-TENDERID_DELTA="`./tendermint show-node-id`"
+#rm -rf ~/.tendermint
+#cd ~/tendermint/build
+#./tendermint init validator > /dev/null 2>&1
+#echo "TENDER_ZIP_GAMMA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
+#TENDERID_GAMMA="`./tendermint show-node-id`"
+
+#rm -rf ~/.tendermint
+#cd ~/tendermint/build
+#./tendermint init validator > /dev/null 2>&1
+#echo "TENDER_ZIP_DELTA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
+#TENDERID_DELTA="`./tendermint show-node-id`"
 
 rm -rf ~/.tendermint
 cd ~/tendermint/build
 ./tendermint init full > /dev/null 2>&1
-echo "TENDER_ZIP_PSI=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
 TENDERID_PSI="`./tendermint show-node-id`"
+cd ~/.tendermint
+echo "TENDER_ZIP_PSI=`zip -r - . 2> /dev/null | base32 -w 0`"
+
 
 rm -rf ~/.tendermint
 cd ~/tendermint/build
 ./tendermint init full > /dev/null 2>&1
-echo "TENDER_ZIP_OMEGA=`zip -r - ~/.tendermint 2> /dev/null | base32 -w 0`"
 TENDERID_OMEGA="`./tendermint show-node-id`"
+cd ~/.tendermint
+echo "TENDER_ZIP_OMEGA=`zip -r - . 2> /dev/null | base32 -w 0`"
+
 
 rm -rf ~/.tendermint
 

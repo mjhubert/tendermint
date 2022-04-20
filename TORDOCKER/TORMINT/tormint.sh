@@ -1,5 +1,5 @@
 #!/bin/bash
-apt update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt install -y git make curl tor sudo basez zip 
+apt update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt install -y git make curl tor sudo basez zip iptables
 
 
 curl -O https://storage.googleapis.com/golang/go1.17.7.linux-amd64.tar.gz

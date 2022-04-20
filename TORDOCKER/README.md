@@ -17,24 +17,24 @@ https://matt.traudt.xyz/posts/2019-01-19-creating-private-v3-onion-services/
 
 `/tendermint/TORDOCKER/TENDERMINT$ docker build . -t tormint`
 
-`docker run -d --name alpha -e SENTRY_ROLE=ALPHA --env-file ./sentry.env tormint`
+`docker run --cap-add=NET_ADMIN -d --name alpha -e SENTRY_ROLE=ALPHA --env-file ./sentry.env tormint`
 
-`docker run -d --name beta -e SENTRY_ROLE=BETA --env-file ./sentry.env tormint`
+`docker run --cap-add=NET_ADMIN -d --name beta -e SENTRY_ROLE=BETA --env-file ./sentry.env tormint`
 
-`docker run -d --name gamma -e SENTRY_ROLE=GAMMA --env-file ./sentry.env tormint`
+`docker run --cap-add=NET_ADMIN -d --name gamma -e SENTRY_ROLE=GAMMA --env-file ./sentry.env tormint`
 
-`docker run -d --name delta -e SENTRY_ROLE=DELTA --env-file ./sentry.env tormint`
+`docker run --cap-add=NET_ADMIN -d --name delta -e SENTRY_ROLE=DELTA --env-file ./sentry.env tormint`
 
-`docker run -d --name psi -e SENTRY_ROLE=PSI --env-file ./sentry.env tormint`
+`docker run --cap-add=NET_ADMIN -d --name psi -e SENTRY_ROLE=PSI --env-file ./sentry.env tormint`
 
-`docker run -d --name omega -e SENTRY_ROLE=OMEGA --env-file ./sentry.env tormint`
+`docker run --cap-add=NET_ADMIN -d --name omega -e SENTRY_ROLE=OMEGA --env-file ./sentry.env tormint`
 
 ## Validators
 
-Three validators node as onion service with client authentication.
+Four validators node as onion service with client authentication: ALPHA, BETA, GAMMA and DELTA.
 
 ## Full Nodes
 
-A full node as onion service and a full node in clear web, both connected with validators in tor.
+Two full nodes as onion services, both connected with validators via tor: PSI and OMEGA.
 
 

@@ -4,6 +4,18 @@ echo "******************"
 echo "** TORMINT NODE **"
 echo "******************"
 
+echo ""
+echo "CONFIG IPTABLES, NOTHING IN/OUT EXCEPT TOR"
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT DROP
+ip6tables -P INPUT DROP
+ip6tables -P FORWARD DROP
+ip6tables -P OUTPUT DROP
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables  -A OUTPUT -m owner --uid-owner debian-tor -j ACCEPT
+iptables -A INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
 cd ~
 
@@ -112,6 +124,8 @@ then
       echo "$ONION_ZIP" | base32 -d - > onion_zip
       echo "$TENDERMINT_MODE" > tendermint_mode
       echo "$TENDER_ZIP" | base32 -d - > tender_zip
+      echo "$TENDER_ZIP_GENESIS" | base32 -d - > genesis_zip
+
       echo "$AUTH_PRIVATE_1" > auth_private_1
       echo "$AUTH_PRIVATE_2" > auth_private_2
       echo "$AUTH_PRIVATE_3" > auth_private_3      
@@ -180,18 +194,29 @@ then
 
       echo "** CONFIGURE TENDERMINT"
 
-      cd /
-      unzip ~/sentry/tender_zip
+      mkdir ~/.tendermint
+      unzip ~/sentry/tender_zip -d ~/.tendermint
 
 
       if [ $TENDERMINT_MODE == "FULL" ] 
       then
+            unzip -o ~/sentry/genesis_zip -d ~/.tendermint/config/
             sed -i "s/private-peer-ids = \"\"/private-peer-ids = \"${PEER_VALIDATOR_ID_1},${PEER_VALIDATOR_ID_2},${PEER_VALIDATOR_ID_3},${PEER_VALIDATOR_ID_4}\"/" /root/.tendermint/config/config.toml
-            sed -i "s/persistent-peers = \"\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3},${PEER_VALIDATOR_4},${PEER_FULL_1}\"/" /root/.tendermint/config/config.toml
+            sed -i "s/persistent-peers = \".*\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3},${PEER_VALIDATOR_4},${PEER_FULL_1}\"/" /root/.tendermint/config/config.toml
+
+            
       else
+
+            echo "###DEBUG###"
+            echo "pv1=$PEER_VALIDATOR_1"
+           echo "pv2=$PEER_VALIDATOR_2"
+           echo "pv3=$PEER_VALIDATOR_3"
+           
+           echo "x=${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3}"
+
             sed -i "s/pex = true/pex = false/" /root/.tendermint/config/config.toml
             sed -i "s/private-peer-ids = \"\"/private-peer-ids = \"${PEER_VALIDATOR_ID_1},${PEER_VALIDATOR_ID_2},${PEER_VALIDATOR_ID_3}\"/" /root/.tendermint/config/config.toml
-            sed -i "s/persistent-peers = \"\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3}\"/" /root/.tendermint/config/config.toml
+            sed -i "s/persistent-peers = \".*\"/persistent-peers = \"${PEER_VALIDATOR_1},${PEER_VALIDATOR_2},${PEER_VALIDATOR_3}\"/" /root/.tendermint/config/config.toml
       fi
 
       sed -i "s/external-address = \"\"/external-address = \"$ONION_HOST:26656\"/" /root/.tendermint/config/config.toml
