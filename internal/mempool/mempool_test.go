@@ -36,7 +36,7 @@ type testTx struct {
 	priority int64
 }
 
-func (app *application) CheckTx(req abci.RequestCheckTx) abci.ResponseCheckTx {
+func (app *application) CheckTx(_ context.Context, req *abci.RequestCheckTx) (*abci.ResponseCheckTx, error) {
 	var (
 		priority int64
 		sender   string
@@ -47,55 +47,43 @@ func (app *application) CheckTx(req abci.RequestCheckTx) abci.ResponseCheckTx {
 	if len(parts) == 3 {
 		v, err := strconv.ParseInt(string(parts[2]), 10, 64)
 		if err != nil {
-			return abci.ResponseCheckTx{
+			return &abci.ResponseCheckTx{
 				Priority:  priority,
 				Code:      100,
 				GasWanted: 1,
-			}
+			}, nil
 		}
 
 		priority = v
 		sender = string(parts[0])
 	} else {
-		return abci.ResponseCheckTx{
+		return &abci.ResponseCheckTx{
 			Priority:  priority,
 			Code:      101,
 			GasWanted: 1,
-		}
+		}, nil
 	}
 
-	return abci.ResponseCheckTx{
+	return &abci.ResponseCheckTx{
 		Priority:  priority,
 		Sender:    sender,
 		Code:      code.CodeTypeOK,
 		GasWanted: 1,
-	}
+	}, nil
 }
 
-func setup(ctx context.Context, t testing.TB, cacheSize int, options ...TxMempoolOption) *TxMempool {
+func setup(t testing.TB, app abciclient.Client, cacheSize int, options ...TxMempoolOption) *TxMempool {
 	t.Helper()
 
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithCancel(ctx)
-
-	logger := log.TestingLogger()
-
-	conn := abciclient.NewLocalClient(logger, &application{
-		kvstore.NewApplication(),
-	})
+	logger := log.NewNopLogger()
 
 	cfg, err := config.ResetTestRoot(t.TempDir(), strings.ReplaceAll(t.Name(), "/", "|"))
 	require.NoError(t, err)
 	cfg.Mempool.CacheSize = cacheSize
-	require.NoError(t, conn.Start(ctx))
 
-	t.Cleanup(func() {
-		os.RemoveAll(cfg.RootDir)
-		cancel()
-		conn.Wait()
-	})
+	t.Cleanup(func() { os.RemoveAll(cfg.RootDir) })
 
-	return NewTxMempool(logger.With("test", t.Name()), cfg.Mempool, conn, options...)
+	return NewTxMempool(logger.With("test", t.Name()), cfg.Mempool, app, options...)
 }
 
 func checkTxs(ctx context.Context, t *testing.T, txmp *TxMempool, numTxs int, peerID uint16) []testTx {
@@ -137,7 +125,13 @@ func TestTxMempool_TxsAvailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 0)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+
+	txmp := setup(t, client, 0)
 	txmp.EnableTxsAvailable()
 
 	ensureNoTxFire := func() {
@@ -179,7 +173,7 @@ func TestTxMempool_TxsAvailable(t *testing.T) {
 
 	// commit half the transactions and ensure we fire an event
 	txmp.Lock()
-	require.NoError(t, txmp.Update(ctx, 1, rawTxs[:50], responses, nil, nil))
+	require.NoError(t, txmp.Update(ctx, 1, rawTxs[:50], responses, nil, nil, true))
 	txmp.Unlock()
 	ensureTxFire()
 	ensureNoTxFire()
@@ -194,7 +188,13 @@ func TestTxMempool_Size(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 0)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+
+	txmp := setup(t, client, 0)
 	txs := checkTxs(ctx, t, txmp, 100, 0)
 	require.Equal(t, len(txs), txmp.Size())
 	require.Equal(t, int64(5690), txmp.SizeBytes())
@@ -210,7 +210,7 @@ func TestTxMempool_Size(t *testing.T) {
 	}
 
 	txmp.Lock()
-	require.NoError(t, txmp.Update(ctx, 1, rawTxs[:50], responses, nil, nil))
+	require.NoError(t, txmp.Update(ctx, 1, rawTxs[:50], responses, nil, nil, true))
 	txmp.Unlock()
 
 	require.Equal(t, len(rawTxs)/2, txmp.Size())
@@ -221,7 +221,13 @@ func TestTxMempool_Flush(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 0)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+
+	txmp := setup(t, client, 0)
 	txs := checkTxs(ctx, t, txmp, 100, 0)
 	require.Equal(t, len(txs), txmp.Size())
 	require.Equal(t, int64(5690), txmp.SizeBytes())
@@ -237,7 +243,7 @@ func TestTxMempool_Flush(t *testing.T) {
 	}
 
 	txmp.Lock()
-	require.NoError(t, txmp.Update(ctx, 1, rawTxs[:50], responses, nil, nil))
+	require.NoError(t, txmp.Update(ctx, 1, rawTxs[:50], responses, nil, nil, true))
 	txmp.Unlock()
 
 	txmp.Flush()
@@ -249,7 +255,13 @@ func TestTxMempool_ReapMaxBytesMaxGas(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 0)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+
+	txmp := setup(t, client, 0)
 	tTxs := checkTxs(ctx, t, txmp, 100, 0) // all txs request 1 gas unit
 	require.Equal(t, len(tTxs), txmp.Size())
 	require.Equal(t, int64(5690), txmp.SizeBytes())
@@ -302,7 +314,13 @@ func TestTxMempool_ReapMaxTxs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 0)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+
+	txmp := setup(t, client, 0)
 	tTxs := checkTxs(ctx, t, txmp, 100, 0)
 	require.Equal(t, len(tTxs), txmp.Size())
 	require.Equal(t, int64(5690), txmp.SizeBytes())
@@ -354,7 +372,12 @@ func TestTxMempool_CheckTxExceedsMaxSize(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 0)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+	txmp := setup(t, client, 0)
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	tx := make([]byte, txmp.config.MaxTxBytes+1)
@@ -374,7 +397,13 @@ func TestTxMempool_CheckTxSamePeer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 100)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+
+	txmp := setup(t, client, 100)
 	peerID := uint16(1)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -392,7 +421,13 @@ func TestTxMempool_CheckTxSameSender(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 100)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+
+	txmp := setup(t, client, 100)
 	peerID := uint16(1)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -417,7 +452,13 @@ func TestTxMempool_ConcurrentTxs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 100)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+
+	txmp := setup(t, client, 100)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	checkTxDone := make(chan struct{})
 
@@ -460,7 +501,7 @@ func TestTxMempool_ConcurrentTxs(t *testing.T) {
 				}
 
 				txmp.Lock()
-				require.NoError(t, txmp.Update(ctx, height, reapedTxs, responses, nil, nil))
+				require.NoError(t, txmp.Update(ctx, height, reapedTxs, responses, nil, nil, true))
 				txmp.Unlock()
 
 				height++
@@ -484,7 +525,13 @@ func TestTxMempool_ExpiredTxs_NumBlocks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	txmp := setup(ctx, t, 500)
+	client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Wait)
+
+	txmp := setup(t, client, 500)
 	txmp.height = 100
 	txmp.config.TTLNumBlocks = 10
 
@@ -500,7 +547,7 @@ func TestTxMempool_ExpiredTxs_NumBlocks(t *testing.T) {
 	}
 
 	txmp.Lock()
-	require.NoError(t, txmp.Update(ctx, txmp.height+1, reapedTxs, responses, nil, nil))
+	require.NoError(t, txmp.Update(ctx, txmp.height+1, reapedTxs, responses, nil, nil, true))
 	txmp.Unlock()
 
 	require.Equal(t, 95, txmp.Size())
@@ -526,7 +573,7 @@ func TestTxMempool_ExpiredTxs_NumBlocks(t *testing.T) {
 	}
 
 	txmp.Lock()
-	require.NoError(t, txmp.Update(ctx, txmp.height+10, reapedTxs, responses, nil, nil))
+	require.NoError(t, txmp.Update(ctx, txmp.height+10, reapedTxs, responses, nil, nil, true))
 	txmp.Unlock()
 
 	require.GreaterOrEqual(t, txmp.Size(), 45)
@@ -556,10 +603,16 @@ func TestTxMempool_CheckTxPostCheckError(t *testing.T) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 
+			client := abciclient.NewLocalClient(log.NewNopLogger(), &application{Application: kvstore.NewApplication()})
+			if err := client.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(client.Wait)
+
 			postCheckFn := func(_ types.Tx, _ *abci.ResponseCheckTx) error {
 				return testCase.err
 			}
-			txmp := setup(ctx, t, 0, WithPostCheck(postCheckFn))
+			txmp := setup(t, client, 0, WithPostCheck(postCheckFn))
 			rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 			tx := make([]byte, txmp.config.MaxTxBytes-1)
 			_, err := rng.Read(tx)
@@ -569,10 +622,17 @@ func TestTxMempool_CheckTxPostCheckError(t *testing.T) {
 				expectedErrString := ""
 				if testCase.err != nil {
 					expectedErrString = testCase.err.Error()
+					require.Equal(t, expectedErrString, txmp.postCheck(tx, res).Error())
+				} else {
+					require.Equal(t, nil, txmp.postCheck(tx, res))
 				}
-				require.Equal(t, expectedErrString, res.MempoolError)
 			}
-			require.NoError(t, txmp.CheckTx(ctx, tx, callback, TxInfo{SenderID: 0}))
+			if testCase.err == nil {
+				require.NoError(t, txmp.CheckTx(ctx, tx, callback, TxInfo{SenderID: 0}))
+			} else {
+				err = txmp.CheckTx(ctx, tx, callback, TxInfo{SenderID: 0})
+				fmt.Print(err.Error())
+			}
 		})
 	}
 }

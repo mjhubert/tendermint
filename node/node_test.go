@@ -20,7 +20,6 @@ import (
 	"github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/crypto/ed25519"
-	"github.com/tendermint/tendermint/crypto/tmhash"
 	"github.com/tendermint/tendermint/internal/eventbus"
 	"github.com/tendermint/tendermint/internal/evidence"
 	"github.com/tendermint/tendermint/internal/mempool"
@@ -28,6 +27,7 @@ import (
 	"github.com/tendermint/tendermint/internal/pubsub"
 	sm "github.com/tendermint/tendermint/internal/state"
 	"github.com/tendermint/tendermint/internal/state/indexer"
+	"github.com/tendermint/tendermint/internal/state/indexer/sink"
 	"github.com/tendermint/tendermint/internal/store"
 	"github.com/tendermint/tendermint/internal/test/factory"
 	"github.com/tendermint/tendermint/libs/log"
@@ -35,6 +35,7 @@ import (
 	"github.com/tendermint/tendermint/libs/service"
 	tmtime "github.com/tendermint/tendermint/libs/time"
 	"github.com/tendermint/tendermint/privval"
+	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
 	"github.com/tendermint/tendermint/types"
 )
 
@@ -62,12 +63,13 @@ func TestNodeStartStop(t *testing.T) {
 
 	require.NoError(t, n.Start(ctx))
 	// wait for the node to produce a block
-	tctx, cancel := context.WithTimeout(ctx, time.Second)
+	tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	blocksSub, err := n.EventBus().SubscribeWithArgs(tctx, pubsub.SubscribeArgs{
 		ClientID: "node_test",
 		Query:    types.EventQueryNewBlock,
+		Limit:    1000,
 	})
 	require.NoError(t, err)
 	_, err = blocksSub.Next(tctx)
@@ -137,6 +139,8 @@ func TestNodeSetAppVersion(t *testing.T) {
 
 	// create node
 	n := getTestNode(ctx, t, cfg, logger)
+
+	require.NoError(t, n.Start(ctx))
 
 	// default config uses the kvstore app
 	appVersion := kvstore.ProtocolVersion
@@ -333,15 +337,16 @@ func TestCreateProposalBlock(t *testing.T) {
 		evidencePool,
 		blockStore,
 		eventBus,
+		sm.NopMetrics(),
 	)
 
-	commit := types.NewCommit(height-1, 0, types.BlockID{}, nil)
-	block, _, err := blockExec.CreateProposalBlock(
+	extCommit := &types.ExtendedCommit{Height: height - 1}
+	block, err := blockExec.CreateProposalBlock(
 		ctx,
 		height,
-		state, commit,
+		state,
+		extCommit,
 		proposerAddr,
-		nil,
 	)
 	require.NoError(t, err)
 
@@ -412,15 +417,16 @@ func TestMaxTxsProposalBlockSize(t *testing.T) {
 		sm.EmptyEvidencePool{},
 		blockStore,
 		eventBus,
+		sm.NopMetrics(),
 	)
 
-	commit := types.NewCommit(height-1, 0, types.BlockID{}, nil)
-	block, _, err := blockExec.CreateProposalBlock(
+	extCommit := &types.ExtendedCommit{Height: height - 1}
+	block, err := blockExec.CreateProposalBlock(
 		ctx,
 		height,
-		state, commit,
+		state,
+		extCommit,
 		proposerAddr,
-		nil,
 	)
 	require.NoError(t, err)
 
@@ -449,7 +455,8 @@ func TestMaxProposalBlockSize(t *testing.T) {
 	err = proxyApp.Start(ctx)
 	require.NoError(t, err)
 
-	state, stateDB, _ := state(t, types.MaxVotesCount, int64(1))
+	state, stateDB, privVals := state(t, types.MaxVotesCount, int64(1))
+
 	stateStore := sm.NewStore(stateDB)
 	blockStore := store.NewBlockStore(dbm.NewMemDB())
 	const maxBytes int64 = 1024 * 1024 * 2
@@ -487,23 +494,30 @@ func TestMaxProposalBlockSize(t *testing.T) {
 		sm.EmptyEvidencePool{},
 		blockStore,
 		eventBus,
+		sm.NopMetrics(),
 	)
 
 	blockID := types.BlockID{
-		Hash: tmhash.Sum([]byte("blockID_hash")),
+		Hash: crypto.Checksum([]byte("blockID_hash")),
 		PartSetHeader: types.PartSetHeader{
 			Total: math.MaxInt32,
-			Hash:  tmhash.Sum([]byte("blockID_part_set_header_hash")),
+			Hash:  crypto.Checksum([]byte("blockID_part_set_header_hash")),
 		},
 	}
+
+	// save the updated validator set for use by the block executor.
+	state.LastBlockHeight = math.MaxInt64 - 3
+	state.LastHeightValidatorsChanged = math.MaxInt64 - 1
+	state.NextValidators = state.Validators.Copy()
+	require.NoError(t, stateStore.Save(state))
 
 	timestamp := time.Date(math.MaxInt64, 0, 0, 0, 0, 0, math.MaxInt64, time.UTC)
 	// change state in order to produce the largest accepted header
 	state.LastBlockID = blockID
-	state.LastBlockHeight = math.MaxInt64 - 1
+	state.LastBlockHeight = math.MaxInt64 - 2
 	state.LastBlockTime = timestamp
-	state.LastResultsHash = tmhash.Sum([]byte("last_results_hash"))
-	state.AppHash = tmhash.Sum([]byte("app_hash"))
+	state.LastResultsHash = crypto.Checksum([]byte("last_results_hash"))
+	state.AppHash = crypto.Checksum([]byte("app_hash"))
 	state.Version.Consensus.Block = math.MaxInt64
 	state.Version.Consensus.App = math.MaxInt64
 	maxChainID := ""
@@ -512,31 +526,44 @@ func TestMaxProposalBlockSize(t *testing.T) {
 	}
 	state.ChainID = maxChainID
 
-	cs := types.CommitSig{
-		BlockIDFlag:      types.BlockIDFlagNil,
-		ValidatorAddress: crypto.AddressHash([]byte("validator_address")),
-		Timestamp:        timestamp,
-		Signature:        crypto.CRandBytes(types.MaxSignatureSize),
-	}
-
-	commit := &types.Commit{
-		Height:  math.MaxInt64,
-		Round:   math.MaxInt32,
-		BlockID: blockID,
-	}
+	voteSet := types.NewExtendedVoteSet(state.ChainID, math.MaxInt64-1, math.MaxInt32, tmproto.PrecommitType, state.Validators)
 
 	// add maximum amount of signatures to a single commit
 	for i := 0; i < types.MaxVotesCount; i++ {
-		commit.Signatures = append(commit.Signatures, cs)
+		pubKey, err := privVals[i].GetPubKey(ctx)
+		require.NoError(t, err)
+		valIdx, val := state.Validators.GetByAddress(pubKey.Address())
+		require.NotNil(t, val)
+
+		vote := &types.Vote{
+			Type:             tmproto.PrecommitType,
+			Height:           math.MaxInt64 - 1,
+			Round:            math.MaxInt32,
+			BlockID:          blockID,
+			Timestamp:        timestamp,
+			ValidatorAddress: val.Address,
+			ValidatorIndex:   valIdx,
+			Extension:        []byte("extension"),
+		}
+		vpb := vote.ToProto()
+		require.NoError(t, privVals[i].SignVote(ctx, state.ChainID, vpb))
+		vote.Signature = vpb.Signature
+		vote.ExtensionSignature = vpb.ExtensionSignature
+
+		added, err := voteSet.AddVote(vote)
+		require.NoError(t, err)
+		require.True(t, added)
 	}
 
-	block, partSet, err := blockExec.CreateProposalBlock(
+	block, err := blockExec.CreateProposalBlock(
 		ctx,
 		math.MaxInt64,
-		state, commit,
+		state,
+		voteSet.MakeExtendedCommit(),
 		proposerAddr,
-		nil,
 	)
+	require.NoError(t, err)
+	partSet, err := block.MakePartSet(types.BlockPartSizeBytes)
 	require.NoError(t, err)
 
 	// this ensures that the header is at max size
@@ -570,12 +597,12 @@ func TestNodeNewSeedNode(t *testing.T) {
 
 	logger := log.NewNopLogger()
 
-	ns, err := makeSeedNode(ctx,
+	ns, err := makeSeedNode(
+		logger,
 		cfg,
 		config.DefaultDBProvider,
 		nodeKey,
 		defaultGenesisDocProviderFunc(cfg),
-		logger,
 	)
 	t.Cleanup(ns.Wait)
 	t.Cleanup(leaktest.CheckTimeout(t, time.Second))
@@ -613,11 +640,9 @@ func TestNodeSetEventSink(t *testing.T) {
 		genDoc, err := types.GenesisDocFromFile(cfg.GenesisFile())
 		require.NoError(t, err)
 
-		indexService, eventSinks, err := createAndStartIndexerService(ctx, cfg,
-			config.DefaultDBProvider, eventBus, logger, genDoc.ChainID,
-			indexer.NopMetrics())
+		eventSinks, err := sink.EventSinksFromConfig(cfg, config.DefaultDBProvider, genDoc.ChainID)
 		require.NoError(t, err)
-		t.Cleanup(indexService.Wait)
+
 		return eventSinks
 	}
 	cleanup := func(ns service.Service) func() {
@@ -743,7 +768,7 @@ func loadStatefromGenesis(ctx context.Context, t *testing.T) sm.State {
 	require.True(t, loadedState.IsEmpty())
 
 	valSet, _ := factory.ValidatorSet(ctx, t, 0, 10)
-	genDoc := factory.GenesisDoc(cfg, time.Now(), valSet.Validators, nil)
+	genDoc := factory.GenesisDoc(cfg, time.Now(), valSet.Validators, factory.ConsensusParams())
 
 	state, err := loadStateFromDBOrGenesisDocProvider(
 		stateStore,

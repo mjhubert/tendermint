@@ -43,7 +43,10 @@ func (p testPeer) runInputRoutine() {
 // Request desired, pretend like we got the block immediately.
 func (p testPeer) simulateInput(input inputData) {
 	block := &types.Block{Header: types.Header{Height: input.request.Height}}
-	input.pool.AddBlock(input.request.PeerID, block, 123)
+	extCommit := &types.ExtendedCommit{
+		Height: input.request.Height,
+	}
+	_ = input.pool.AddBlock(input.request.PeerID, block, extCommit, 123)
 	// TODO: uncommenting this creates a race which is detected by:
 	// https://github.com/golang/go/blob/2bd767b1022dd3254bcec469f0ee164024726486/src/testing/testing.go#L854-L856
 	// see: https://github.com/tendermint/tendermint/issues/3390#issue-418379890
@@ -86,7 +89,7 @@ func TestBlockPoolBasic(t *testing.T) {
 	peers := makePeers(10, start+1, 1000)
 	errorsCh := make(chan peerError, 1000)
 	requestsCh := make(chan BlockRequest, 1000)
-	pool := NewBlockPool(log.TestingLogger(), start, requestsCh, errorsCh)
+	pool := NewBlockPool(log.NewNopLogger(), start, requestsCh, errorsCh)
 
 	if err := pool.Start(ctx); err != nil {
 		t.Error(err)
@@ -110,7 +113,7 @@ func TestBlockPoolBasic(t *testing.T) {
 			if !pool.IsRunning() {
 				return
 			}
-			first, second := pool.PeekTwoBlocks()
+			first, second, _ := pool.PeekTwoBlocks()
 			if first != nil && second != nil {
 				pool.PopRequest()
 			} else {
@@ -138,7 +141,7 @@ func TestBlockPoolTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := log.TestingLogger()
+	logger := log.NewNopLogger()
 
 	start := int64(42)
 	peers := makePeers(10, start+1, 1000)
@@ -164,7 +167,7 @@ func TestBlockPoolTimeout(t *testing.T) {
 			if !pool.IsRunning() {
 				return
 			}
-			first, second := pool.PeekTwoBlocks()
+			first, second, _ := pool.PeekTwoBlocks()
 			if first != nil && second != nil {
 				pool.PopRequest()
 			} else {
@@ -207,7 +210,7 @@ func TestBlockPoolRemovePeer(t *testing.T) {
 	requestsCh := make(chan BlockRequest)
 	errorsCh := make(chan peerError)
 
-	pool := NewBlockPool(log.TestingLogger(), 1, requestsCh, errorsCh)
+	pool := NewBlockPool(log.NewNopLogger(), 1, requestsCh, errorsCh)
 	err := pool.Start(ctx)
 	require.NoError(t, err)
 	t.Cleanup(func() { cancel(); pool.Wait() })

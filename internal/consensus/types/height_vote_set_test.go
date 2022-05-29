@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tendermint/tendermint/config"
-	"github.com/tendermint/tendermint/crypto/tmhash"
+	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/internal/test/factory"
 	tmrand "github.com/tendermint/tendermint/libs/rand"
 	tmtime "github.com/tendermint/tendermint/libs/time"
@@ -27,7 +27,7 @@ func TestPeerCatchupRounds(t *testing.T) {
 	valSet, privVals := factory.ValidatorSet(ctx, t, 10, 1)
 
 	chainID := cfg.ChainID()
-	hvs := NewHeightVoteSet(chainID, 1, valSet)
+	hvs := NewExtendedHeightVoteSet(chainID, 1, valSet)
 
 	vote999_0 := makeVoteHR(ctx, t, 1, 0, 999, privVals, chainID)
 	added, err := hvs.AddVote(vote999_0, "peer1")
@@ -71,7 +71,7 @@ func makeVoteHR(
 	pubKey, err := privVal.GetPubKey(ctx)
 	require.NoError(t, err)
 
-	randBytes := tmrand.Bytes(tmhash.Size)
+	randBytes := tmrand.Bytes(crypto.HashSize)
 
 	vote := &types.Vote{
 		ValidatorAddress: pubKey.Address(),
@@ -88,6 +88,7 @@ func makeVoteHR(
 	require.NoError(t, err, "Error signing vote")
 
 	vote.Signature = v.Signature
+	vote.ExtensionSignature = v.ExtensionSignature
 
 	return vote
 }

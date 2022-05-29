@@ -9,6 +9,7 @@ import (
 	cfg "github.com/tendermint/tendermint/config"
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/scripts/keymigrate"
+	"github.com/tendermint/tendermint/scripts/scmigrate"
 )
 
 func MakeKeyMigrateCommand(conf *cfg.Config, logger log.Logger) *cobra.Command {
@@ -20,15 +21,16 @@ func MakeKeyMigrateCommand(conf *cfg.Config, logger log.Logger) *cobra.Command {
 			defer cancel()
 
 			contexts := []string{
-				// this is ordered to put the
-				// (presumably) biggest/most important
-				// subsets first.
+				// this is ordered to put
+				// the more ephemeral tables first to
+				// forclose the possiblity of the
+				// ephemeral data overwriting later data
+				"tx_index",
+				"peerstore",
+				"light",
 				"blockstore",
 				"state",
-				"peerstore",
-				"tx_index",
 				"evidence",
-				"light",
 			}
 
 			for idx, dbctx := range contexts {
@@ -50,6 +52,13 @@ func MakeKeyMigrateCommand(conf *cfg.Config, logger log.Logger) *cobra.Command {
 				if err = keymigrate.Migrate(ctx, db); err != nil {
 					return fmt.Errorf("running migration for context %q: %w",
 						dbctx, err)
+				}
+
+				if dbctx == "blockstore" {
+					if err := scmigrate.Migrate(ctx, db); err != nil {
+						return fmt.Errorf("running seen commit migration: %w", err)
+
+					}
 				}
 			}
 

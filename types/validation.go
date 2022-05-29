@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/crypto/batch"
-	"github.com/tendermint/tendermint/crypto/tmhash"
 	tmmath "github.com/tendermint/tendermint/libs/math"
 )
 
@@ -36,10 +36,10 @@ func VerifyCommit(chainID string, vals *ValidatorSet, blockID BlockID,
 	votingPowerNeeded := vals.TotalVotingPower() * 2 / 3
 
 	// ignore all absent signatures
-	ignore := func(c CommitSig) bool { return c.Absent() }
+	ignore := func(c CommitSig) bool { return c.BlockIDFlag == BlockIDFlagAbsent }
 
 	// only count the signatures that are for the block
-	count := func(c CommitSig) bool { return c.ForBlock() }
+	count := func(c CommitSig) bool { return c.BlockIDFlag == BlockIDFlagCommit }
 
 	// attempt to batch verify
 	if shouldBatchVerify(vals, commit) {
@@ -69,7 +69,7 @@ func VerifyCommitLight(chainID string, vals *ValidatorSet, blockID BlockID,
 	votingPowerNeeded := vals.TotalVotingPower() * 2 / 3
 
 	// ignore all commit signatures that are not for the block
-	ignore := func(c CommitSig) bool { return !c.ForBlock() }
+	ignore := func(c CommitSig) bool { return c.BlockIDFlag != BlockIDFlagCommit }
 
 	// count all the remaining signatures
 	count := func(c CommitSig) bool { return true }
@@ -113,7 +113,7 @@ func VerifyCommitLightTrusting(chainID string, vals *ValidatorSet, commit *Commi
 	votingPowerNeeded := totalVotingPowerMulByNumerator / int64(trustLevel.Denominator)
 
 	// ignore all commit signatures that are not for the block
-	ignore := func(c CommitSig) bool { return !c.ForBlock() }
+	ignore := func(c CommitSig) bool { return c.BlockIDFlag != BlockIDFlagCommit }
 
 	// count all the remaining signatures
 	count := func(c CommitSig) bool { return true }
@@ -132,11 +132,11 @@ func VerifyCommitLightTrusting(chainID string, vals *ValidatorSet, commit *Commi
 }
 
 // ValidateHash returns an error if the hash is not empty, but its
-// size != tmhash.Size.
+// size != crypto.HashSize.
 func ValidateHash(h []byte) error {
-	if len(h) > 0 && len(h) != tmhash.Size {
+	if len(h) > 0 && len(h) != crypto.HashSize {
 		return fmt.Errorf("expected size to be %d bytes, got %d bytes",
-			tmhash.Size,
+			crypto.HashSize,
 			len(h),
 		)
 	}

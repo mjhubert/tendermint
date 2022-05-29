@@ -23,6 +23,8 @@ const (
 	MaxActiveIDs = math.MaxUint16
 )
 
+//go:generate ../../scripts/mockery_generate.sh Mempool
+
 // Mempool defines the mempool interface.
 //
 // Updates to the mempool need to be synchronized with committing a block so
@@ -69,6 +71,7 @@ type Mempool interface {
 		txResults []*abci.ExecTxResult,
 		newPreFn PreCheckFunc,
 		newPostFn PostCheckFunc,
+		recheck bool,
 	) error
 
 	// FlushAppConn flushes the mempool connection to ensure async callback calls

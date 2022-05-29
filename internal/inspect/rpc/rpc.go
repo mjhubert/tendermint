@@ -38,16 +38,16 @@ func Routes(cfg config.RPCConfig, s state.Store, bs state.BlockStore, es []index
 		Logger:     logger,
 	}
 	return core.RoutesMap{
-		"blockchain":       server.NewRPCFunc(env.BlockchainInfo, "minHeight", "maxHeight"),
-		"consensus_params": server.NewRPCFunc(env.ConsensusParams, "height"),
-		"block":            server.NewRPCFunc(env.Block, "height"),
-		"block_by_hash":    server.NewRPCFunc(env.BlockByHash, "hash"),
-		"block_results":    server.NewRPCFunc(env.BlockResults, "height"),
-		"commit":           server.NewRPCFunc(env.Commit, "height"),
-		"validators":       server.NewRPCFunc(env.Validators, "height", "page", "per_page"),
-		"tx":               server.NewRPCFunc(env.Tx, "hash", "prove"),
-		"tx_search":        server.NewRPCFunc(env.TxSearch, "query", "prove", "page", "per_page", "order_by"),
-		"block_search":     server.NewRPCFunc(env.BlockSearch, "query", "page", "per_page", "order_by"),
+		"blockchain":       server.NewRPCFunc(env.BlockchainInfo),
+		"consensus_params": server.NewRPCFunc(env.ConsensusParams),
+		"block":            server.NewRPCFunc(env.Block),
+		"block_by_hash":    server.NewRPCFunc(env.BlockByHash),
+		"block_results":    server.NewRPCFunc(env.BlockResults),
+		"commit":           server.NewRPCFunc(env.Commit),
+		"validators":       server.NewRPCFunc(env.Validators),
+		"tx":               server.NewRPCFunc(env.Tx),
+		"tx_search":        server.NewRPCFunc(env.TxSearch),
+		"block_search":     server.NewRPCFunc(env.BlockSearch),
 	}
 }
 
@@ -125,7 +125,8 @@ func serverRPCConfig(r *config.RPCConfig) *server.Config {
 	// If necessary adjust global WriteTimeout to ensure it's greater than
 	// TimeoutBroadcastTxCommit.
 	// See https://github.com/tendermint/tendermint/issues/3435
-	if cfg.WriteTimeout <= r.TimeoutBroadcastTxCommit {
+	// Note we don't need to adjust anything if the timeout is already unlimited.
+	if cfg.WriteTimeout > 0 && cfg.WriteTimeout <= r.TimeoutBroadcastTxCommit {
 		cfg.WriteTimeout = r.TimeoutBroadcastTxCommit + 1*time.Second
 	}
 	return cfg

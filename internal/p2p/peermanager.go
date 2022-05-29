@@ -42,7 +42,8 @@ const (
 type PeerScore uint8
 
 const (
-	PeerScorePersistent PeerScore = math.MaxUint8 // persistent peers
+	PeerScorePersistent       PeerScore = math.MaxUint8 // persistent peers
+	MaxPeerScoreNotPersistent PeerScore = PeerScorePersistent - 1
 )
 
 // PeerUpdate is a peer update event sent via PeerUpdates.
@@ -427,6 +428,13 @@ func (m *PeerManager) PeerRatio() float64 {
 	}
 
 	return float64(m.store.Size()) / float64(m.options.MaxPeers)
+}
+
+func (m *PeerManager) HasMaxPeerCapacity() bool {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	return len(m.connected) >= int(m.options.MaxConnected)
 }
 
 // DialNext finds an appropriate peer address to dial, and marks it as dialing.
@@ -827,6 +835,11 @@ func (m *PeerManager) Advertise(peerID types.NodeID, limit uint16) []NodeAddress
 	return addresses
 }
 
+// PeerEventSubscriber describes the type of the subscription method, to assist
+// in isolating reactors specific construction and lifecycle from the
+// peer manager.
+type PeerEventSubscriber func(context.Context) *PeerUpdates
+
 // Subscribe subscribes to peer updates. The caller must consume the peer
 // updates in a timely fashion and close the subscription when done, otherwise
 // the PeerManager will halt.
@@ -1019,37 +1032,6 @@ func (m *PeerManager) retryDelay(failures uint32, persistent bool) time.Duration
 	}
 
 	return delay
-}
-
-// GetHeight returns a peer's height, as reported via SetHeight, or 0 if the
-// peer or height is unknown.
-//
-// FIXME: This is a temporary workaround to share state between the consensus
-// and mempool reactors, carried over from the legacy P2P stack. Reactors should
-// not have dependencies on each other, instead tracking this themselves.
-func (m *PeerManager) GetHeight(peerID types.NodeID) int64 {
-	m.mtx.Lock()
-	defer m.mtx.Unlock()
-
-	peer, _ := m.store.Get(peerID)
-	return peer.Height
-}
-
-// SetHeight stores a peer's height, making it available via GetHeight.
-//
-// FIXME: This is a temporary workaround to share state between the consensus
-// and mempool reactors, carried over from the legacy P2P stack. Reactors should
-// not have dependencies on each other, instead tracking this themselves.
-func (m *PeerManager) SetHeight(peerID types.NodeID, height int64) error {
-	m.mtx.Lock()
-	defer m.mtx.Unlock()
-
-	peer, ok := m.store.Get(peerID)
-	if !ok {
-		peer = m.newPeerInfo(peerID)
-	}
-	peer.Height = height
-	return m.store.Set(peer)
 }
 
 // peerStore stores information about peers. It is not thread-safe, assuming it
@@ -1283,6 +1265,9 @@ func (p *peerInfo) Score() PeerScore {
 	}
 
 	score := p.MutableScore
+	if score > int64(MaxPeerScoreNotPersistent) {
+		score = int64(MaxPeerScoreNotPersistent)
+	}
 
 	for _, addr := range p.AddressInfo {
 		// DialFailures is reset when dials succeed, so this
@@ -1292,10 +1277,6 @@ func (p *peerInfo) Score() PeerScore {
 
 	if score <= 0 {
 		return 0
-	}
-
-	if score >= math.MaxUint8 {
-		return PeerScore(math.MaxUint8)
 	}
 
 	return PeerScore(score)
