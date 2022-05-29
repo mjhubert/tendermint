@@ -3,6 +3,7 @@ package types
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,12 +18,6 @@ const (
 	// the number of validators.
 	MaxVotesCount = 10000
 )
-
-// UNSTABLE
-// XXX: duplicate of p2p.ID to avoid dependence between packages.
-// Perhaps we can have a minimal types package containing this (and other things?)
-// that both `types` and `p2p` import ?
-type P2PID string
 
 /*
 	VoteSet helps collect signatures from validators at each height+round for a
@@ -59,11 +54,12 @@ type P2PID string
 	NOTE: Assumes that the sum total of voting power does not exceed MaxUInt64.
 */
 type VoteSet struct {
-	chainID       string
-	height        int64
-	round         int32
-	signedMsgType tmproto.SignedMsgType
-	valSet        *ValidatorSet
+	chainID           string
+	height            int64
+	round             int32
+	signedMsgType     tmproto.SignedMsgType
+	valSet            *ValidatorSet
+	extensionsEnabled bool
 
 	mtx           sync.Mutex
 	votesBitArray *bits.BitArray
@@ -71,10 +67,11 @@ type VoteSet struct {
 	sum           int64                  // Sum of voting power for seen votes, discounting conflicts
 	maj23         *BlockID               // First 2/3 majority seen
 	votesByBlock  map[string]*blockVotes // string(blockHash|blockParts) -> blockVotes
-	peerMaj23s    map[P2PID]BlockID      // Maj23 for each peer
+	peerMaj23s    map[string]BlockID     // Maj23 for each peer
 }
 
-// Constructs a new VoteSet struct used to accumulate votes for given height/round.
+// NewVoteSet instantiates all fields of a new vote set. This constructor requires
+// that no vote extension data be present on the votes that are added to the set.
 func NewVoteSet(chainID string, height int64, round int32,
 	signedMsgType tmproto.SignedMsgType, valSet *ValidatorSet) *VoteSet {
 	if height == 0 {
@@ -91,8 +88,18 @@ func NewVoteSet(chainID string, height int64, round int32,
 		sum:           0,
 		maj23:         nil,
 		votesByBlock:  make(map[string]*blockVotes, valSet.Size()),
-		peerMaj23s:    make(map[P2PID]BlockID),
+		peerMaj23s:    make(map[string]BlockID),
 	}
+}
+
+// NewExtendedVoteSet constructs a vote set with additional vote verification logic.
+// The VoteSet constructed with NewExtendedVoteSet verifies the vote extension
+// data for every vote added to the set.
+func NewExtendedVoteSet(chainID string, height int64, round int32,
+	signedMsgType tmproto.SignedMsgType, valSet *ValidatorSet) *VoteSet {
+	vs := NewVoteSet(chainID, height, round, signedMsgType, valSet)
+	vs.extensionsEnabled = true
+	return vs
 }
 
 func (voteSet *VoteSet) ChainID() string {
@@ -200,8 +207,17 @@ func (voteSet *VoteSet) addVote(vote *Vote) (added bool, err error) {
 	}
 
 	// Check signature.
-	if err := vote.Verify(voteSet.chainID, val.PubKey); err != nil {
-		return false, fmt.Errorf("failed to verify vote with ChainID %s and PubKey %s: %w", voteSet.chainID, val.PubKey, err)
+	if voteSet.extensionsEnabled {
+		if err := vote.VerifyVoteAndExtension(voteSet.chainID, val.PubKey); err != nil {
+			return false, fmt.Errorf("failed to verify vote with ChainID %s and PubKey %s: %w", voteSet.chainID, val.PubKey, err)
+		}
+	} else {
+		if err := vote.Verify(voteSet.chainID, val.PubKey); err != nil {
+			return false, fmt.Errorf("failed to verify vote with ChainID %s and PubKey %s: %w", voteSet.chainID, val.PubKey, err)
+		}
+		if len(vote.ExtensionSignature) > 0 || len(vote.Extension) > 0 {
+			return false, errors.New("unexpected vote extension data present in vote")
+		}
 	}
 
 	// Add vote and get conflicting vote if any.
@@ -224,10 +240,6 @@ func (voteSet *VoteSet) getVote(valIndex int32, blockKey string) (vote *Vote, ok
 		return existing, true
 	}
 	return nil, false
-}
-
-func (voteSet *VoteSet) GetVotes() []*Vote {
-	return voteSet.votes
 }
 
 // Assumes signature is valid.
@@ -310,7 +322,7 @@ func (voteSet *VoteSet) addVerifiedVote(
 // this can cause memory issues.
 // TODO: implement ability to remove peers too
 // NOTE: VoteSet must not be nil
-func (voteSet *VoteSet) SetPeerMaj23(peerID P2PID, blockID BlockID) error {
+func (voteSet *VoteSet) SetPeerMaj23(peerID string, blockID BlockID) error {
 	if voteSet == nil {
 		panic("SetPeerMaj23() on nil VoteSet")
 	}
@@ -527,9 +539,9 @@ func (voteSet *VoteSet) MarshalJSON() ([]byte, error) {
 // NOTE: insufficient for unmarshaling from (compressed votes)
 // TODO: make the peerMaj23s nicer to read (eg just the block hash)
 type VoteSetJSON struct {
-	Votes         []string          `json:"votes"`
-	VotesBitArray string            `json:"votes_bit_array"`
-	PeerMaj23s    map[P2PID]BlockID `json:"peer_maj_23s"`
+	Votes         []string           `json:"votes"`
+	VotesBitArray string             `json:"votes_bit_array"`
+	PeerMaj23s    map[string]BlockID `json:"peer_maj_23s"`
 }
 
 // Return the bit-array of votes including
@@ -609,36 +621,41 @@ func (voteSet *VoteSet) sumTotalFrac() (int64, int64, float64) {
 //--------------------------------------------------------------------------------
 // Commit
 
-// MakeCommit constructs a Commit from the VoteSet. It only includes precommits
-// for the block, which has 2/3+ majority, and nil.
+// MakeExtendedCommit constructs a Commit from the VoteSet. It only includes
+// precommits for the block, which has 2/3+ majority, and nil.
 //
 // Panics if the vote type is not PrecommitType or if there's no +2/3 votes for
 // a single block.
-func (voteSet *VoteSet) MakeCommit() *Commit {
+func (voteSet *VoteSet) MakeExtendedCommit() *ExtendedCommit {
 	if voteSet.signedMsgType != tmproto.PrecommitType {
-		panic("Cannot MakeCommit() unless VoteSet.Type is PrecommitType")
+		panic("Cannot MakeExtendCommit() unless VoteSet.Type is PrecommitType")
 	}
 	voteSet.mtx.Lock()
 	defer voteSet.mtx.Unlock()
 
 	// Make sure we have a 2/3 majority
 	if voteSet.maj23 == nil {
-		panic("Cannot MakeCommit() unless a blockhash has +2/3")
+		panic("Cannot MakeExtendCommit() unless a blockhash has +2/3")
 	}
 
-	// For every validator, get the precommit
-	commitSigs := make([]CommitSig, len(voteSet.votes))
+	// For every validator, get the precommit with extensions
+	sigs := make([]ExtendedCommitSig, len(voteSet.votes))
 	for i, v := range voteSet.votes {
-		commitSig := v.CommitSig()
+		sig := v.ExtendedCommitSig()
 		// if block ID exists but doesn't match, exclude sig
-		if commitSig.ForBlock() && !v.BlockID.Equals(*voteSet.maj23) {
-			commitSig = NewCommitSigAbsent()
+		if sig.BlockIDFlag == BlockIDFlagCommit && !v.BlockID.Equals(*voteSet.maj23) {
+			sig = NewExtendedCommitSigAbsent()
 		}
 
-		commitSigs[i] = commitSig
+		sigs[i] = sig
 	}
 
-	return NewCommit(voteSet.GetHeight(), voteSet.GetRound(), *voteSet.maj23, commitSigs)
+	return &ExtendedCommit{
+		Height:             voteSet.GetHeight(),
+		Round:              voteSet.GetRound(),
+		BlockID:            *voteSet.maj23,
+		ExtendedSignatures: sigs,
+	}
 }
 
 //--------------------------------------------------------------------------------

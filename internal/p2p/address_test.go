@@ -221,77 +221,77 @@ func TestNodeAddress_Resolve(t *testing.T) {
 
 	testcases := []struct {
 		address p2p.NodeAddress
-		expect  p2p.Endpoint
+		expect  *p2p.Endpoint
 		ok      bool
 	}{
 		// Valid networked addresses (with hostname).
 		{
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "127.0.0.1", Port: 80, Path: "/path"},
-			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv4(127, 0, 0, 1)}, Port: 80, Path: "/path"},
+			&p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv4(127, 0, 0, 1)}, Port: 80, Path: "/path"},
 			true,
 		},
 		{
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "gt42bqb62i2n4rlo26qpydrx6zertnusycvu5akzsd3mnh5xr4w5giad.onion", Port: 80, Path: "/path"},
-			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{Onion: "gt42bqb62i2n4rlo26qpydrx6zertnusycvu5akzsd3mnh5xr4w5giad.onion"}, Port: 80, Path: "/path"},
+			&p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{Onion: "gt42bqb62i2n4rlo26qpydrx6zertnusycvu5akzsd3mnh5xr4w5giad.onion"}, Port: 80, Path: "/path"},
 			true,
 		},
 		{
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "localhost", Port: 80, Path: "/path"},
-			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv4(127, 0, 0, 1)}, Port: 80, Path: "/path"},
+			&p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv4(127, 0, 0, 1)}, Port: 80, Path: "/path"},
 			true,
 		},
 		{
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "localhost", Port: 80, Path: "/path"},
-			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv6loopback}, Port: 80, Path: "/path"},
+			&p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv6loopback}, Port: 80, Path: "/path"},
 			true,
 		},
 		{
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "127.0.0.1"},
-			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv4(127, 0, 0, 1)}},
+			&p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv4(127, 0, 0, 1)}},
 			true,
 		},
 		{
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "::1"},
-			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv6loopback}},
+			&p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv6loopback}},
 			true,
 		},
 		{
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "8.8.8.8"},
-			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv4(8, 8, 8, 8)}},
+			&p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: net.IPv4(8, 8, 8, 8)}},
 			true,
 		},
 		{
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "2001:0db8::ff00:0042:8329"},
-			p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: []byte{
+			&p2p.Endpoint{Protocol: "tcp", Address: types.ProtocolAddress{IP: []byte{
 				0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x42, 0x83, 0x29}}},
 			true,
 		},
 		{
 			p2p.NodeAddress{Protocol: "tcp", Hostname: "some.missing.host.tendermint.com"},
-			p2p.Endpoint{},
+			&p2p.Endpoint{},
 			false,
 		},
 
 		// Valid non-networked addresses.
 		{
 			p2p.NodeAddress{Protocol: "memory", NodeID: id},
-			p2p.Endpoint{Protocol: "memory", Path: string(id)},
+			&p2p.Endpoint{Protocol: "memory", Path: string(id)},
 			true,
 		},
 		{
 			p2p.NodeAddress{Protocol: "memory", NodeID: id, Path: string(id)},
-			p2p.Endpoint{Protocol: "memory", Path: string(id)},
+			&p2p.Endpoint{Protocol: "memory", Path: string(id)},
 			true,
 		},
 
 		// Invalid addresses.
-		{p2p.NodeAddress{}, p2p.Endpoint{}, false},
-		{p2p.NodeAddress{Hostname: "127.0.0.1"}, p2p.Endpoint{}, false},
-		{p2p.NodeAddress{Protocol: "tcp", Hostname: "127.0.0.1:80"}, p2p.Endpoint{}, false},
-		{p2p.NodeAddress{Protocol: "memory"}, p2p.Endpoint{}, false},
-		{p2p.NodeAddress{Protocol: "memory", Path: string(id)}, p2p.Endpoint{}, false},
-		{p2p.NodeAddress{Protocol: "tcp", Hostname: "💥"}, p2p.Endpoint{}, false},
-		{p2p.NodeAddress{Protocol: "tcp", Hostname: "121212212121212121.onion"}, p2p.Endpoint{}, false},
+		{p2p.NodeAddress{}, &p2p.Endpoint{}, false},
+		{p2p.NodeAddress{Hostname: "127.0.0.1"}, &p2p.Endpoint{}, false},
+		{p2p.NodeAddress{Protocol: "tcp", Hostname: "127.0.0.1:80"}, &p2p.Endpoint{}, false},
+		{p2p.NodeAddress{Protocol: "memory"}, &p2p.Endpoint{}, false},
+		{p2p.NodeAddress{Protocol: "memory", Path: string(id)}, &p2p.Endpoint{}, false},
+		{p2p.NodeAddress{Protocol: "tcp", Hostname: "💥"}, &p2p.Endpoint{}, false},
+		{p2p.NodeAddress{Protocol: "tcp", Hostname: "121212212121212121.onion"}, &p2p.Endpoint{}, false},
 	}
 	for _, tc := range testcases {
 		tc := tc

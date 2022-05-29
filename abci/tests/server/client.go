@@ -21,7 +21,7 @@ func InitChain(ctx context.Context, client abciclient.Client) error {
 		power := mrand.Int()
 		vals[i] = types.UpdateValidator(pubkey, int64(power), "")
 	}
-	_, err := client.InitChain(ctx, types.RequestInitChain{
+	_, err := client.InitChain(ctx, &types.RequestInitChain{
 		Validators: vals,
 	})
 	if err != nil {
@@ -50,7 +50,7 @@ func Commit(ctx context.Context, client abciclient.Client, hashExp []byte) error
 }
 
 func FinalizeBlock(ctx context.Context, client abciclient.Client, txBytes [][]byte, codeExp []uint32, dataExp []byte) error {
-	res, _ := client.FinalizeBlock(ctx, types.RequestFinalizeBlock{Txs: txBytes})
+	res, _ := client.FinalizeBlock(ctx, &types.RequestFinalizeBlock{Txs: txBytes})
 	for i, tx := range res.TxResults {
 		code, data, log := tx.Code, tx.Data, tx.Log
 		if code != codeExp[i] {
@@ -71,12 +71,12 @@ func FinalizeBlock(ctx context.Context, client abciclient.Client, txBytes [][]by
 }
 
 func CheckTx(ctx context.Context, client abciclient.Client, txBytes []byte, codeExp uint32, dataExp []byte) error {
-	res, _ := client.CheckTx(ctx, types.RequestCheckTx{Tx: txBytes})
-	code, data, log := res.Code, res.Data, res.Log
+	res, _ := client.CheckTx(ctx, &types.RequestCheckTx{Tx: txBytes})
+	code, data := res.Code, res.Data
 	if code != codeExp {
 		fmt.Println("Failed test: CheckTx")
-		fmt.Printf("CheckTx response code was unexpected. Got %v expected %v. Log: %v\n",
-			code, codeExp, log)
+		fmt.Printf("CheckTx response code was unexpected. Got %v expected %v.,",
+			code, codeExp)
 		return errors.New("checkTx")
 	}
 	if !bytes.Equal(data, dataExp) {

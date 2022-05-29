@@ -220,7 +220,7 @@ type VoteMessage struct {
 
 func (*VoteMessage) TypeTag() string { return "tendermint/Vote" }
 
-// ValidateBasic performs basic validation.
+// ValidateBasic checks whether the vote within the message is well-formed.
 func (m *VoteMessage) ValidateBasic() error {
 	return m.Vote.ValidateBasic()
 }
@@ -534,6 +534,8 @@ func MsgFromProto(msg *tmcons.Message) (Message, error) {
 			Part:   parts,
 		}
 	case *tmcons.Message_Vote:
+		// Vote validation will be handled in the vote message ValidateBasic
+		// call below.
 		vote, err := types.VoteFromProto(msg.Vote.Vote)
 		if err != nil {
 			return nil, fmt.Errorf("vote msg to proto error: %w", err)

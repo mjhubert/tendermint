@@ -1,13 +1,16 @@
 package state
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	abciclient "github.com/tendermint/tendermint/abci/client"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/crypto/encoding"
+	"github.com/tendermint/tendermint/crypto/merkle"
 	"github.com/tendermint/tendermint/internal/eventbus"
 	"github.com/tendermint/tendermint/internal/mempool"
 	"github.com/tendermint/tendermint/libs/log"
@@ -47,16 +50,7 @@ type BlockExecutor struct {
 	cache map[string]struct{}
 }
 
-type BlockExecutorOption func(executor *BlockExecutor)
-
-func BlockExecutorWithMetrics(metrics *Metrics) BlockExecutorOption {
-	return func(blockExec *BlockExecutor) {
-		blockExec.metrics = metrics
-	}
-}
-
-// NewBlockExecutor returns a new BlockExecutor with a NopEventBus.
-// Call SetEventBus to provide one.
+// NewBlockExecutor returns a new BlockExecutor with the passed-in EventBus.
 func NewBlockExecutor(
 	stateStore Store,
 	logger log.Logger,
@@ -65,25 +59,19 @@ func NewBlockExecutor(
 	evpool EvidencePool,
 	blockStore BlockStore,
 	eventBus *eventbus.EventBus,
-	options ...BlockExecutorOption,
+	metrics *Metrics,
 ) *BlockExecutor {
-	res := &BlockExecutor{
+	return &BlockExecutor{
 		eventBus:   eventBus,
 		store:      stateStore,
 		appClient:  appClient,
 		mempool:    pool,
 		evpool:     evpool,
 		logger:     logger,
-		metrics:    NopMetrics(),
+		metrics:    metrics,
 		cache:      make(map[string]struct{}),
 		blockStore: blockStore,
 	}
-
-	for _, option := range options {
-		option(res)
-	}
-
-	return res
 }
 
 func (blockExec *BlockExecutor) Store() Store {
@@ -99,10 +87,10 @@ func (blockExec *BlockExecutor) Store() Store {
 func (blockExec *BlockExecutor) CreateProposalBlock(
 	ctx context.Context,
 	height int64,
-	state State, commit *types.Commit,
+	state State,
+	lastExtCommit *types.ExtendedCommit,
 	proposerAddr []byte,
-	votes []*types.Vote,
-) (*types.Block, *types.PartSet, error) {
+) (*types.Block, error) {
 
 	maxBytes := state.ConsensusParams.Block.MaxBytes
 	maxGas := state.ConsensusParams.Block.MaxGas
@@ -113,13 +101,19 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 	maxDataBytes := types.MaxDataBytes(maxBytes, evSize, state.Validators.Size())
 
 	txs := blockExec.mempool.ReapMaxBytesMaxGas(maxDataBytes, maxGas)
-
-	preparedProposal, err := blockExec.appClient.PrepareProposal(
+	commit := lastExtCommit.ToCommit()
+	block := state.MakeBlock(height, txs, commit, evidence, proposerAddr)
+	rpp, err := blockExec.appClient.PrepareProposal(
 		ctx,
-		abci.RequestPrepareProposal{
-			BlockData:     txs.ToSliceOfBytes(),
-			BlockDataSize: maxDataBytes,
-			Votes:         types.VotesToProto(votes),
+		&abci.RequestPrepareProposal{
+			MaxTxBytes:          maxDataBytes,
+			Txs:                 block.Txs.ToSliceOfBytes(),
+			LocalLastCommit:     buildExtendedCommitInfo(lastExtCommit, blockExec.store, state.InitialHeight, state.ConsensusParams.ABCI),
+			ByzantineValidators: block.Evidence.ToABCI(),
+			Height:              block.Height,
+			Time:                block.Time,
+			NextValidatorsHash:  block.NextValidatorsHash,
+			ProposerAddress:     block.ProposerAddress,
 		},
 	)
 	if err != nil {
@@ -128,24 +122,24 @@ func (blockExec *BlockExecutor) CreateProposalBlock(
 		// transaction causing an error.
 		//
 		// Also, the App can simply skip any transaction that could cause any kind of trouble.
-		// Either way, we can not recover in a meaningful way, unless we skip proposing
-		// this block, repair what caused the error and try again. Hence, we panic on
-		// purpose for now.
-		panic(err)
+		// Either way, we cannot recover in a meaningful way, unless we skip proposing
+		// this block, repair what caused the error and try again. Hence, we return an
+		// error for now (the production code calling this function is expected to panic).
+		return nil, err
 	}
-	newTxs := preparedProposal.GetBlockData()
-	var txSize int
-	for _, tx := range newTxs {
-		txSize += len(tx)
+	txrSet := types.NewTxRecordSet(rpp.TxRecords)
 
-		if maxDataBytes < int64(txSize) {
-			panic("block data exceeds max amount of allowed bytes")
+	if err := txrSet.Validate(maxDataBytes, block.Txs); err != nil {
+		return nil, err
+	}
+
+	for _, rtx := range txrSet.RemovedTxs() {
+		if err := blockExec.mempool.RemoveTxByKey(rtx.Key()); err != nil {
+			blockExec.logger.Debug("error removing transaction from the mempool", "error", err, "tx hash", rtx.Hash())
 		}
 	}
-
-	modifiedTxs := types.ToTxs(preparedProposal.GetBlockData())
-
-	return state.MakeBlock(height, modifiedTxs, commit, evidence, proposerAddr)
+	itxs := txrSet.IncludedTxs()
+	return state.MakeBlock(height, itxs, commit, evidence, proposerAddr), nil
 }
 
 func (blockExec *BlockExecutor) ProcessProposal(
@@ -153,20 +147,24 @@ func (blockExec *BlockExecutor) ProcessProposal(
 	block *types.Block,
 	state State,
 ) (bool, error) {
-	req := abci.RequestProcessProposal{
+	resp, err := blockExec.appClient.ProcessProposal(ctx, &abci.RequestProcessProposal{
 		Hash:                block.Header.Hash(),
-		Header:              *block.Header.ToProto(),
+		Height:              block.Header.Height,
+		Time:                block.Header.Time,
 		Txs:                 block.Data.Txs.ToSliceOfBytes(),
 		ProposedLastCommit:  buildLastCommitInfo(block, blockExec.store, state.InitialHeight),
 		ByzantineValidators: block.Evidence.ToABCI(),
-	}
-
-	resp, err := blockExec.appClient.ProcessProposal(ctx, req)
+		ProposerAddress:     block.ProposerAddress,
+		NextValidatorsHash:  block.NextValidatorsHash,
+	})
 	if err != nil {
 		return false, ErrInvalidBlock(err)
 	}
+	if resp.IsStatusUnknown() {
+		panic(fmt.Sprintf("ProcessProposal responded with status %s", resp.Status.String()))
+	}
 
-	return resp.Accept, nil
+	return resp.IsAccepted(), nil
 }
 
 // ValidateBlock validates the given block against the given state.
@@ -208,15 +206,17 @@ func (blockExec *BlockExecutor) ApplyBlock(
 		return state, ErrInvalidBlock(err)
 	}
 	startTime := time.Now().UnixNano()
-	pbh := block.Header.ToProto()
 	finalizeBlockResponse, err := blockExec.appClient.FinalizeBlock(
 		ctx,
-		abci.RequestFinalizeBlock{
+		&abci.RequestFinalizeBlock{
 			Hash:                block.Hash(),
-			Header:              *pbh,
+			Height:              block.Header.Height,
+			Time:                block.Header.Time,
 			Txs:                 block.Txs.ToSliceOfBytes(),
 			DecidedLastCommit:   buildLastCommitInfo(block, blockExec.store, state.InitialHeight),
 			ByzantineValidators: block.Evidence.ToABCI(),
+			ProposerAddress:     block.ProposerAddress,
+			NextValidatorsHash:  block.NextValidatorsHash,
 		},
 	)
 	endTime := time.Now().UnixNano()
@@ -246,10 +246,19 @@ func (blockExec *BlockExecutor) ApplyBlock(
 	}
 	if len(validatorUpdates) > 0 {
 		blockExec.logger.Debug("updates to validators", "updates", types.ValidatorListString(validatorUpdates))
+		blockExec.metrics.ValidatorSetUpdates.Add(1)
+	}
+	if finalizeBlockResponse.ConsensusParamUpdates != nil {
+		blockExec.metrics.ConsensusParamUpdates.Add(1)
 	}
 
 	// Update the state with the block and responses.
-	state, err = state.Update(blockID, &block.Header, ABCIResponsesResultsHash(abciResponses), finalizeBlockResponse.ConsensusParamUpdates, validatorUpdates)
+	rs, err := abci.MarshalTxResults(finalizeBlockResponse.TxResults)
+	if err != nil {
+		return state, fmt.Errorf("marshaling TxResults: %w", err)
+	}
+	h := merkle.HashFromByteSlices(rs)
+	state, err = state.Update(blockID, &block.Header, h, finalizeBlockResponse.ConsensusParamUpdates, validatorUpdates)
 	if err != nil {
 		return state, fmt.Errorf("commit failed for application: %w", err)
 	}
@@ -284,35 +293,35 @@ func (blockExec *BlockExecutor) ApplyBlock(
 
 	// Events are fired after everything else.
 	// NOTE: if we crash between Commit and Save, events wont be fired during replay
-	fireEvents(ctx, blockExec.logger, blockExec.eventBus, block, blockID, finalizeBlockResponse, validatorUpdates)
+	fireEvents(blockExec.logger, blockExec.eventBus, block, blockID, finalizeBlockResponse, validatorUpdates)
 
 	return state, nil
 }
 
-func (blockExec *BlockExecutor) ExtendVote(ctx context.Context, vote *types.Vote) (types.VoteExtension, error) {
-	req := abci.RequestExtendVote{
-		Vote: vote.ToProto(),
-	}
-
-	resp, err := blockExec.appClient.ExtendVote(ctx, req)
+func (blockExec *BlockExecutor) ExtendVote(ctx context.Context, vote *types.Vote) ([]byte, error) {
+	resp, err := blockExec.appClient.ExtendVote(ctx, &abci.RequestExtendVote{
+		Hash:   vote.BlockID.Hash,
+		Height: vote.Height,
+	})
 	if err != nil {
-		return types.VoteExtension{}, err
+		panic(fmt.Errorf("ExtendVote call failed: %w", err))
 	}
-	return types.VoteExtensionFromProto(resp.VoteExtension), nil
+	return resp.VoteExtension, nil
 }
 
 func (blockExec *BlockExecutor) VerifyVoteExtension(ctx context.Context, vote *types.Vote) error {
-	req := abci.RequestVerifyVoteExtension{
-		Vote: vote.ToProto(),
-	}
-
-	resp, err := blockExec.appClient.VerifyVoteExtension(ctx, req)
+	resp, err := blockExec.appClient.VerifyVoteExtension(ctx, &abci.RequestVerifyVoteExtension{
+		Hash:             vote.BlockID.Hash,
+		ValidatorAddress: vote.ValidatorAddress,
+		Height:           vote.Height,
+		VoteExtension:    vote.Extension,
+	})
 	if err != nil {
-		return err
+		panic(fmt.Errorf("VerifyVoteExtension call failed: %w", err))
 	}
 
-	if resp.IsErr() {
-		return types.ErrVoteInvalidExtension
+	if !resp.IsOK() {
+		return errors.New("invalid vote extension")
 	}
 
 	return nil
@@ -364,6 +373,7 @@ func (blockExec *BlockExecutor) Commit(
 		txResults,
 		TxPreCheckForState(state),
 		TxPostCheckForState(state),
+		state.ConsensusParams.ABCI.RecheckTx,
 	)
 
 	return res.Data, res.RetainHeight, err
@@ -371,14 +381,14 @@ func (blockExec *BlockExecutor) Commit(
 
 func buildLastCommitInfo(block *types.Block, store Store, initialHeight int64) abci.CommitInfo {
 	if block.Height == initialHeight {
-		// there is no last commmit for the initial height.
+		// there is no last commit for the initial height.
 		// return an empty value.
 		return abci.CommitInfo{}
 	}
 
 	lastValSet, err := store.LoadValidators(block.Height - 1)
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("failed to load validator set at height %d: %w", block.Height-1, err))
 	}
 
 	var (
@@ -400,12 +410,84 @@ func buildLastCommitInfo(block *types.Block, store Store, initialHeight int64) a
 		commitSig := block.LastCommit.Signatures[i]
 		votes[i] = abci.VoteInfo{
 			Validator:       types.TM2PB.Validator(val),
-			SignedLastBlock: !commitSig.Absent(),
+			SignedLastBlock: commitSig.BlockIDFlag != types.BlockIDFlagAbsent,
 		}
 	}
 
 	return abci.CommitInfo{
 		Round: block.LastCommit.Round,
+		Votes: votes,
+	}
+}
+
+// buildExtendedCommitInfo populates an ABCI extended commit from the
+// corresponding Tendermint extended commit ec, using the stored validator set
+// from ec.  It requires ec to include the original precommit votes along with
+// the vote extensions from the last commit.
+//
+// For heights below the initial height, for which we do not have the required
+// data, it returns an empty record.
+//
+// Assumes that the commit signatures are sorted according to validator index.
+func buildExtendedCommitInfo(ec *types.ExtendedCommit, store Store, initialHeight int64, ap types.ABCIParams) abci.ExtendedCommitInfo {
+	if ec.Height < initialHeight {
+		// There are no extended commits for heights below the initial height.
+		return abci.ExtendedCommitInfo{}
+	}
+
+	valSet, err := store.LoadValidators(ec.Height)
+	if err != nil {
+		panic(fmt.Errorf("failed to load validator set at height %d, initial height %d: %w", ec.Height, initialHeight, err))
+	}
+
+	var (
+		ecSize    = ec.Size()
+		valSetLen = len(valSet.Validators)
+	)
+
+	// Ensure that the size of the validator set in the extended commit matches
+	// the size of the validator set in the state store.
+	if ecSize != valSetLen {
+		panic(fmt.Errorf(
+			"extended commit size (%d) does not match validator set length (%d) at height %d\n\n%v\n\n%v",
+			ecSize, valSetLen, ec.Height, ec.ExtendedSignatures, valSet.Validators,
+		))
+	}
+
+	votes := make([]abci.ExtendedVoteInfo, ecSize)
+	for i, val := range valSet.Validators {
+		ecs := ec.ExtendedSignatures[i]
+
+		// Absent signatures have empty validator addresses, but otherwise we
+		// expect the validator addresses to be the same.
+		if ecs.BlockIDFlag != types.BlockIDFlagAbsent && !bytes.Equal(ecs.ValidatorAddress, val.Address) {
+			panic(fmt.Errorf("validator address of extended commit signature in position %d (%s) does not match the corresponding validator's at height %d (%s)",
+				i, ecs.ValidatorAddress, ec.Height, val.Address,
+			))
+		}
+
+		var ext []byte
+		// Check if vote extensions were enabled during the commit's height: ec.Height.
+		// ec is the commit from the previous height, so if extensions were enabled
+		// during that height, we ensure they are present and deliver the data to
+		// the proposer. If they were not enabled during this previous height, we
+		// will not deliver extension data.
+		if ap.VoteExtensionsEnabled(ec.Height) && ecs.BlockIDFlag == types.BlockIDFlagCommit {
+			if err := ecs.EnsureExtension(); err != nil {
+				panic(fmt.Errorf("commit at height %d received with missing vote extensions data", ec.Height))
+			}
+			ext = ecs.Extension
+		}
+
+		votes[i] = abci.ExtendedVoteInfo{
+			Validator:       types.TM2PB.Validator(val),
+			SignedLastBlock: ecs.BlockIDFlag != types.BlockIDFlagAbsent,
+			VoteExtension:   ext,
+		}
+	}
+
+	return abci.ExtendedCommitInfo{
+		Round: ec.Round,
 		Votes: votes,
 	}
 }
@@ -453,7 +535,7 @@ func (state State) Update(
 	if len(validatorUpdates) > 0 {
 		err := nValSet.UpdateWithChangeSet(validatorUpdates)
 		if err != nil {
-			return state, fmt.Errorf("error changing validator set: %w", err)
+			return state, fmt.Errorf("changing validator set: %w", err)
 		}
 		// Change results from this height but only applies to the next next height.
 		lastHeightValsChanged = header.Height + 1 + 1
@@ -470,7 +552,12 @@ func (state State) Update(
 		nextParams = state.ConsensusParams.UpdateConsensusParams(consensusParamUpdates)
 		err := nextParams.ValidateConsensusParams()
 		if err != nil {
-			return state, fmt.Errorf("error updating consensus params: %w", err)
+			return state, fmt.Errorf("updating consensus params: %w", err)
+		}
+
+		err = state.ConsensusParams.ValidateUpdate(consensusParamUpdates, header.Height)
+		if err != nil {
+			return state, fmt.Errorf("updating consensus params: %w", err)
 		}
 
 		state.Version.Consensus.App = nextParams.Version.AppVersion
@@ -505,7 +592,6 @@ func (state State) Update(
 // Fire TxEvent for every tx.
 // NOTE: if Tendermint crashes before commit, some or all of these events may be published again.
 func fireEvents(
-	ctx context.Context,
 	logger log.Logger,
 	eventBus types.BlockEventPublisher,
 	block *types.Block,
@@ -513,7 +599,7 @@ func fireEvents(
 	finalizeBlockResponse *abci.ResponseFinalizeBlock,
 	validatorUpdates []*types.Validator,
 ) {
-	if err := eventBus.PublishEventNewBlock(ctx, types.EventDataNewBlock{
+	if err := eventBus.PublishEventNewBlock(types.EventDataNewBlock{
 		Block:               block,
 		BlockID:             blockID,
 		ResultFinalizeBlock: *finalizeBlockResponse,
@@ -521,7 +607,7 @@ func fireEvents(
 		logger.Error("failed publishing new block", "err", err)
 	}
 
-	if err := eventBus.PublishEventNewBlockHeader(ctx, types.EventDataNewBlockHeader{
+	if err := eventBus.PublishEventNewBlockHeader(types.EventDataNewBlockHeader{
 		Header:              block.Header,
 		NumTxs:              int64(len(block.Txs)),
 		ResultFinalizeBlock: *finalizeBlockResponse,
@@ -531,7 +617,7 @@ func fireEvents(
 
 	if len(block.Evidence) != 0 {
 		for _, ev := range block.Evidence {
-			if err := eventBus.PublishEventNewEvidence(ctx, types.EventDataNewEvidence{
+			if err := eventBus.PublishEventNewEvidence(types.EventDataNewEvidence{
 				Evidence: ev,
 				Height:   block.Height,
 			}); err != nil {
@@ -547,7 +633,7 @@ func fireEvents(
 	}
 
 	for i, tx := range block.Data.Txs {
-		if err := eventBus.PublishEventTx(ctx, types.EventDataTx{
+		if err := eventBus.PublishEventTx(types.EventDataTx{
 			TxResult: abci.TxResult{
 				Height: block.Height,
 				Index:  uint32(i),
@@ -560,7 +646,7 @@ func fireEvents(
 	}
 
 	if len(finalizeBlockResponse.ValidatorUpdates) > 0 {
-		if err := eventBus.PublishEventValidatorSetUpdates(ctx,
+		if err := eventBus.PublishEventValidatorSetUpdates(
 			types.EventDataValidatorSetUpdates{ValidatorUpdates: validatorUpdates}); err != nil {
 			logger.Error("failed publishing event", "err", err)
 		}
@@ -575,19 +661,19 @@ func fireEvents(
 func ExecCommitBlock(
 	ctx context.Context,
 	be *BlockExecutor,
-	appConnConsensus abciclient.Client,
+	appConn abciclient.Client,
 	block *types.Block,
 	logger log.Logger,
 	store Store,
 	initialHeight int64,
 	s State,
 ) ([]byte, error) {
-	pbh := block.Header.ToProto()
-	finalizeBlockResponse, err := appConnConsensus.FinalizeBlock(
+	finalizeBlockResponse, err := appConn.FinalizeBlock(
 		ctx,
-		abci.RequestFinalizeBlock{
+		&abci.RequestFinalizeBlock{
 			Hash:                block.Hash(),
-			Header:              *pbh,
+			Height:              block.Height,
+			Time:                block.Time,
 			Txs:                 block.Txs.ToSliceOfBytes(),
 			DecidedLastCommit:   buildLastCommitInfo(block, store, initialHeight),
 			ByzantineValidators: block.Evidence.ToABCI(),
@@ -619,11 +705,11 @@ func ExecCommitBlock(
 		}
 
 		blockID := types.BlockID{Hash: block.Hash(), PartSetHeader: bps.Header()}
-		fireEvents(ctx, be.logger, be.eventBus, block, blockID, finalizeBlockResponse, validatorUpdates)
+		fireEvents(be.logger, be.eventBus, block, blockID, finalizeBlockResponse, validatorUpdates)
 	}
 
 	// Commit block, get hash back
-	res, err := appConnConsensus.Commit(ctx)
+	res, err := appConn.Commit(ctx)
 	if err != nil {
 		logger.Error("client error during proxyAppConn.Commit", "err", res)
 		return nil, err

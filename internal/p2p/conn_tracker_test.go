@@ -71,4 +71,15 @@ func TestConnTracker(t *testing.T) {
 		}
 		require.Equal(t, 10, ct.Len())
 	})
+	t.Run("Window", func(t *testing.T) {
+		const window = 100 * time.Millisecond
+		ct := newConnTracker(10, window)
+		ip := randLocalIPv4()
+		require.NoError(t, ct.AddConn(types.ProtocolAddress{IP: ip}))
+		ct.RemoveConn(types.ProtocolAddress{IP: ip})
+		require.Error(t, ct.AddConn(types.ProtocolAddress{IP: ip}))
+		time.Sleep(window)
+		require.NoError(t, ct.AddConn(types.ProtocolAddress{IP: ip}))
+	})
+
 }

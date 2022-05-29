@@ -20,16 +20,27 @@ import (
 
 // Config is a RPC server configuration.
 type Config struct {
-	// see netutil.LimitListener
+	// The maximum number of connections that will be accepted by the listener.
+	// See https://godoc.org/golang.org/x/net/netutil#LimitListener
 	MaxOpenConnections int
-	// mirrors http.Server#ReadTimeout
+
+	// Used to set the HTTP server's per-request read timeout.
+	// See https://godoc.org/net/http#Server.ReadTimeout
 	ReadTimeout time.Duration
-	// mirrors http.Server#WriteTimeout
+
+	// Used to set the HTTP server's per-request write timeout.  Note that this
+	// affects ALL methods on the server, so it should not be set too low. This
+	// should be used as a safety valve, not a resource-control timeout.
+	//
+	// See https://godoc.org/net/http#Server.WriteTimeout
 	WriteTimeout time.Duration
-	// MaxBodyBytes controls the maximum number of bytes the
-	// server will read parsing the request body.
+
+	// Controls the maximum number of bytes the server will read parsing the
+	// request body.
 	MaxBodyBytes int64
-	// mirrors http.Server#MaxHeaderBytes
+
+	// Controls the maximum size of a request header.
+	// See https://godoc.org/net/http#Server.MaxHeaderBytes
 	MaxHeaderBytes int
 }
 
@@ -38,21 +49,15 @@ func DefaultConfig() *Config {
 	return &Config{
 		MaxOpenConnections: 0, // unlimited
 		ReadTimeout:        10 * time.Second,
-		WriteTimeout:       10 * time.Second,
-		MaxBodyBytes:       int64(1000000), // 1MB
-		MaxHeaderBytes:     1 << 20,        // same as the net/http default
+		WriteTimeout:       0,       // no default timeout
+		MaxBodyBytes:       1000000, // 1MB
+		MaxHeaderBytes:     1 << 20, // same as the net/http default
 	}
 }
 
 // Serve creates a http.Server and calls Serve with the given listener. It
 // wraps handler to recover panics and limit the request body size.
-func Serve(
-	ctx context.Context,
-	listener net.Listener,
-	handler http.Handler,
-	logger log.Logger,
-	config *Config,
-) error {
+func Serve(ctx context.Context, listener net.Listener, handler http.Handler, logger log.Logger, config *Config) error {
 	logger.Info(fmt.Sprintf("Starting RPC HTTP server on %s", listener.Addr()))
 	h := recoverAndLogHandler(MaxBytesHandler(handler, config.MaxBodyBytes), logger)
 	s := &http.Server{
@@ -83,19 +88,14 @@ func Serve(
 // Serve creates a http.Server and calls ServeTLS with the given listener,
 // certFile and keyFile. It wraps handler to recover panics and limit the
 // request body size.
-func ServeTLS(
-	ctx context.Context,
-	listener net.Listener,
-	handler http.Handler,
-	certFile, keyFile string,
-	logger log.Logger,
-	config *Config,
-) error {
-	logger.Info(fmt.Sprintf("Starting RPC HTTPS server on %s (cert: %q, key: %q)",
-		listener.Addr(), certFile, keyFile))
-	h := recoverAndLogHandler(MaxBytesHandler(handler, config.MaxBodyBytes), logger)
+func ServeTLS(ctx context.Context, listener net.Listener, handler http.Handler, certFile, keyFile string, logger log.Logger, config *Config) error {
+	logger.Info("Starting RPC HTTPS server",
+		"listenterAddr", listener.Addr(),
+		"certFile", certFile,
+		"keyFile", keyFile)
+
 	s := &http.Server{
-		Handler:        h,
+		Handler:        recoverAndLogHandler(MaxBytesHandler(handler, config.MaxBodyBytes), logger),
 		ReadTimeout:    config.ReadTimeout,
 		WriteTimeout:   config.WriteTimeout,
 		MaxHeaderBytes: config.MaxHeaderBytes,

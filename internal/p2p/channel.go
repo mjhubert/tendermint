@@ -46,6 +46,7 @@ type Wrapper interface {
 type PeerError struct {
 	NodeID types.NodeID
 	Err    error
+	Fatal  bool
 }
 
 func (pe PeerError) Error() string { return fmt.Sprintf("peer=%q: %s", pe.NodeID, pe.Err.Error()) }
@@ -59,24 +60,17 @@ type Channel struct {
 	outCh chan<- Envelope  // outbound messages (reactors to peers)
 	errCh chan<- PeerError // peer error reporting
 
-	messageType proto.Message // the channel's message type, used for unmarshaling
+	name string
 }
 
 // NewChannel creates a new channel. It is primarily for internal and test
 // use, reactors should use Router.OpenChannel().
-func NewChannel(
-	id ChannelID,
-	messageType proto.Message,
-	inCh <-chan Envelope,
-	outCh chan<- Envelope,
-	errCh chan<- PeerError,
-) *Channel {
+func NewChannel(id ChannelID, inCh <-chan Envelope, outCh chan<- Envelope, errCh chan<- PeerError) *Channel {
 	return &Channel{
-		ID:          id,
-		messageType: messageType,
-		inCh:        inCh,
-		outCh:       outCh,
-		errCh:       errCh,
+		ID:    id,
+		inCh:  inCh,
+		outCh: outCh,
+		errCh: errCh,
 	}
 }
 
@@ -101,6 +95,8 @@ func (ch *Channel) SendError(ctx context.Context, pe PeerError) error {
 		return nil
 	}
 }
+
+func (ch *Channel) String() string { return fmt.Sprintf("p2p.Channel<%d:%s>", ch.ID, ch.name) }
 
 // Receive returns a new unbuffered iterator to receive messages from ch.
 // The iterator runs until ctx ends.

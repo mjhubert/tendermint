@@ -77,9 +77,6 @@ $(BUILDDIR)/:
 ###############################################################################
 
 check-proto-deps:
-ifeq (,$(shell which buf))
-	$(error "buf is required for Protobuf building, linting and breakage checking. See https://docs.buf.build/installation for installation instructions.")
-endif
 ifeq (,$(shell which protoc-gen-gogofaster))
 	$(error "gogofaster plugin for protoc is required. Run 'go install github.com/gogo/protobuf/protoc-gen-gogofaster@latest' to install")
 endif
@@ -93,7 +90,7 @@ endif
 
 proto-gen: check-proto-deps
 	@echo "Generating Protobuf files"
-	@buf generate
+	@go run github.com/bufbuild/buf/cmd/buf generate
 	@mv ./proto/tendermint/abci/types.pb.go ./abci/types/
 .PHONY: proto-gen
 
@@ -101,7 +98,7 @@ proto-gen: check-proto-deps
 # execution only.
 proto-lint: check-proto-deps
 	@echo "Linting Protobuf files"
-	@buf lint
+	@go run github.com/bufbuild/buf/cmd/buf lint
 .PHONY: proto-lint
 
 proto-format: check-proto-format-deps
@@ -114,14 +111,8 @@ proto-check-breaking: check-proto-deps
 	@echo "Note: This is only useful if your changes have not yet been committed."
 	@echo "      Otherwise read up on buf's \"breaking\" command usage:"
 	@echo "      https://docs.buf.build/breaking/usage"
-	@buf breaking --against ".git"
+	@go run github.com/bufbuild/buf/cmd/buf breaking --against ".git"
 .PHONY: proto-check-breaking
-
-# TODO: Should be removed when work on ABCI++ is complete.
-# For more information, see https://github.com/tendermint/tendermint/issues/8066
-abci-proto-gen:
-	./scripts/abci-gen.sh
-.PHONY: abci-proto-gen
 
 ###############################################################################
 ###                              Build ABCI                                 ###
@@ -178,7 +169,7 @@ go.sum: go.mod
 
 draw_deps:
 	@# requires brew install graphviz or apt-get install graphviz
-	go get github.com/RobotsAndPencils/goviz
+	go install github.com/RobotsAndPencils/goviz@latest
 	@goviz -i github.com/tendermint/tendermint/cmd/tendermint -d 3 | dot -Tpng -o dependency-graph.png
 .PHONY: draw_deps
 
@@ -232,7 +223,8 @@ DESTINATION = ./index.html.md
 build-docs:
 	@cd docs && \
 	while read -r branch path_prefix; do \
-		(git checkout $${branch} && npm ci && VUEPRESS_BASE="/$${path_prefix}/" npm run build) ; \
+		( git checkout $${branch} && npm ci --quiet && \
+			VUEPRESS_BASE="/$${path_prefix}/" npm run build --quiet ) ; \
 		mkdir -p ~/output/$${path_prefix} ; \
 		cp -r .vuepress/dist/* ~/output/$${path_prefix}/ ; \
 		cp ~/output/$${path_prefix}/index.html ~/output ; \
@@ -243,10 +235,8 @@ build-docs:
 ###                            Docker image                                 ###
 ###############################################################################
 
-build-docker: build-linux
-	cp $(BUILDDIR)/tendermint DOCKER/tendermint
+build-docker:
 	docker build --label=tendermint --tag="tendermint/tendermint" -f DOCKER/Dockerfile .
-	rm -rf DOCKER/tendermint
 .PHONY: build-docker
 
 
@@ -257,6 +247,21 @@ build-docker: build-linux
 mockery:
 	go generate -run="./scripts/mockery_generate.sh" ./...
 .PHONY: mockery
+
+###############################################################################
+###                               Metrics                                   ###
+###############################################################################
+
+metrics: testdata-metrics
+	go generate -run="scripts/metricsgen" ./...
+.PHONY: metrics
+
+	# By convention, the go tool ignores subdirectories of directories named
+	# 'testdata'. This command invokes the generate command on the folder directly
+	# to avoid this.
+testdata-metrics:
+	ls ./scripts/metricsgen/testdata | xargs -I{} go generate -run="scripts/metricsgen" ./scripts/metricsgen/testdata/{}
+.PHONY: testdata-metrics
 
 ###############################################################################
 ###                       Local testnet using docker                        ###
@@ -343,4 +348,3 @@ split-test-packages:$(BUILDDIR)/packages.txt
 	split -d -n l/$(NUM_SPLIT) $< $<.
 test-group-%:split-test-packages
 	cat $(BUILDDIR)/packages.txt.$* | xargs go test -mod=readonly -timeout=5m -race -coverprofile=$(BUILDDIR)/$*.profile.out
-

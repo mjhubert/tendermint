@@ -35,6 +35,7 @@ func (emptyMempool) Update(
 	_ []*abci.ExecTxResult,
 	_ mempool.PreCheckFunc,
 	_ mempool.PostCheckFunc,
+	_ bool,
 ) error {
 	return nil
 }
@@ -57,7 +58,6 @@ func (emptyMempool) CloseWAL()      {}
 // the real app.
 
 func newMockProxyApp(
-	ctx context.Context,
 	logger log.Logger,
 	appHash []byte,
 	abciResponses *tmstate.ABCIResponses,
@@ -76,15 +76,15 @@ type mockProxyApp struct {
 	abciResponses *tmstate.ABCIResponses
 }
 
-func (mock *mockProxyApp) FinalizeBlock(req abci.RequestFinalizeBlock) abci.ResponseFinalizeBlock {
+func (mock *mockProxyApp) FinalizeBlock(_ context.Context, req *abci.RequestFinalizeBlock) (*abci.ResponseFinalizeBlock, error) {
 	r := mock.abciResponses.FinalizeBlock
 	mock.txCount++
 	if r == nil {
-		return abci.ResponseFinalizeBlock{}
+		return &abci.ResponseFinalizeBlock{}, nil
 	}
-	return *r
+	return r, nil
 }
 
-func (mock *mockProxyApp) Commit() abci.ResponseCommit {
-	return abci.ResponseCommit{Data: mock.appHash}
+func (mock *mockProxyApp) Commit(context.Context) (*abci.ResponseCommit, error) {
+	return &abci.ResponseCommit{Data: mock.appHash}, nil
 }
